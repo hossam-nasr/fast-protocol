@@ -292,7 +292,9 @@ The FAST Handshake protocol is described at a high level by the
 following message sequence diagram:
 
 ![Handshake protocol Message Sequence
-Diagram](Handshake_MSC){#fig:handshake_msc width="\\textwidth"}
+Diagram](design/Handshake_MSC.png)
+
+Handshake Protocol Message Sequence Diagram
 
 ### Message Format and Message Processing Rules
 
@@ -521,15 +523,17 @@ The following diagram summarizes the state machine and possible state
 changes for the server:
 
 ![Handshake protocol server state
-diagram](Handshake_State_Diagram _Server){#fig:handshake_state_server
-width="\\textwidth"}
+diagram](design/Handshake_State_Diagram_Server.png)
+
+Handshake Protocol Server State Diagram
 
 Meanwhile, the following state machine diagram illustrates the states
 and state changes in the client
 
 ![Handshake protocol client state
-diagram](Handshake_State_Diagram_Client){#fig:handshake_state_client
-width="\\textwidth"}
+diagram](design/Handshake_State_Diagram_Client.png)
+
+Handhake Protocol Client State Diagram
 
 FAST Tunnel Protocol
 --------------------
@@ -559,14 +563,18 @@ starts at zero when the session is first established.
 The following message sequence diagram describes at a high level the
 messages communicated using this protocol:
 
-![Tunnel protocol message sequence diagram](Tunnel_MSC){#fig:tunnel_msc}
+![Tunnel protocol message sequence diagram](design/Tunnel_MSC.png)
+
+Tunnel Protocol Message Sequence Diagram
 
 ### Message Format
 
 All messages in this protocol take the following format (not to scale):
 
 ![Tunnel protocol message format (not to
-scale)](Message_Format){#fig:tunnel_msc width="\\textwidth"}
+scale)](design/Message_Format.png)
+
+Tunnel Protocol Message Format (not to scale)
 
 where:
 
@@ -885,15 +893,17 @@ The following diagram summarizes the state machine and possible state
 changes for the server:
 
 ![Tunnel protocol server state
-diagram](Tunnel_State_Diagram_Server){#fig:tunnel_msc
-width="\\textwidth"}
+diagram](design/Tunnel_State_Diagram_Server.png)
+
+Tunnel Protocol Server State Diagram
 
 Meanwhile, the following state machine diagram illustrates the states
 and state changes in the client
 
 ![Tunnel protocol client state
-diagram](Tunnel_State_Diagram_Client){#fig:tunnel_msc
-width="\\textwidth"}
+diagram](design/Tunnel_State_Diagram_Client.png)
+
+Tunnel Protocol Client State Diagram
 
 Summary
 =======

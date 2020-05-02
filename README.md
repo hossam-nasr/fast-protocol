@@ -1,3 +1,10 @@
+Overview
+============
+This Repository is an  implementation and design document for the File Asynchronous Secure Transfer (FAST) protocol. 
+This was the final project for my Applied Cryptography class for my semester abroad at Aquincum Institute of Technology in Budapest (AIT-Budapest) for Spring of 2020 (yes, __that__ Spring of 2020). 
+
+Following is the design document for this protocol, which outlines the protocol in detail, and was part of the final project assignment.
+
 ---
 author:
 - Hossam Mabed

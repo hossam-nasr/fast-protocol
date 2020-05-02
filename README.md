@@ -1,3 +1,10 @@
+---
+author:
+- Hossam Mabed
+date: April 2020
+title: FAST Protocol Specification
+---
+
 Overview
 ============
 This Repository is an  implementation and design document for the File Asynchronous Secure Transfer (FAST) protocol. 
@@ -5,12 +12,8 @@ This was the final project for my Applied Cryptography class for my semester abr
 
 Following is the design document for this protocol, which outlines the protocol in detail, and was part of the final project assignment.
 
----
-author:
-- Hossam Mabed
-date: April 2020
-title: FAST Protocol Specification
----
+Design Document
+===============
 
 File Asynchronous Secure Transfer
 

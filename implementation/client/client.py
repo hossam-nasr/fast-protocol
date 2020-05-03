@@ -1,5 +1,6 @@
 from netinterface import network_interface
-netif = network_interface("../network", 'C')		# create network interface netif
+# create network interface netif
+netif = network_interface('../network/', 'C')
 
 status, msg = netif.receive_msg(blocking=True)
 print("I'm the client, and I received the following message: ", msg)

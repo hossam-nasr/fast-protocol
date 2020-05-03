@@ -16,7 +16,7 @@ SERVER_INFO_FILE = "./server_pub_key.txt"
 MAX_TRIALS = 3
 MAC_LEN = 16
 ACK_MSG_LEN = 46
-
+NONCE_LEN = 16
 
 # ---------------------------------------------- HELPER FUNCTIONS ------------------------------------------------
 
@@ -161,3 +161,43 @@ while (not session_active):
 
 
 # -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------
+print("Start typing commands!")
+send_sqn = 0
+receive_sqn = 1
+while (session_active):
+    # Get command and args
+    raw_command = input("~$ ").rstrip().lstrip()
+    commands = raw_command.split()
+    command = commands[0]
+    args = commands[1:]
+
+    # ------------------------- Construct command message  ----------------------------
+    # payload
+    payload = b""
+    arg_num = len(commands)
+    payload += arg_num.to_bytes(1, byteorder="big")
+    payload += command.upper().encode("utf-8")
+    for arg in args:
+        arg_bytes = arg.encode("utf-8")
+        arg_len_bytes = len(arg_bytes).to_bytes(8, byteorder="big")
+        payload += arg_len_bytes + arg_bytes
+
+    # header
+    version_bytes = b'\x01\x00'  # version 1.0
+    send_sqn += 1
+    rnd = Random.get_random_bytes(8)
+    nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
+    # Header length is 24 bytes (2 version number + 4 length + 16 nonce)
+    msg_len = 22 + len(payload) + MAC_LEN
+    msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
+    header = version_bytes + msg_len_bytes + nonce
+
+    # encrypt message
+    cipher = AES.new(session_key, AES.MODE_GCM,
+                     nonce=nonce, mac_len=MAC_LEN)
+    cipher.update(header)
+    encrypted_payload, auth_tag = cipher.encrypt_and_digest(
+        payload)
+
+    # ---------------------------- Send command message  -------------------------------
+    netif.send_msg(SERVER_ID, header + encrypted_payload + auth_tag)

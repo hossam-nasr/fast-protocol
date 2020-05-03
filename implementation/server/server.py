@@ -8,6 +8,7 @@ from ast import literal_eval
 import time
 import re
 import os
+import shutil
 import sys
 
 # ------------------------------------------------- CONSTANTS ----------------------------------------------------
@@ -25,7 +26,38 @@ NONCE_LEN = 16
 netif = network_interface(NET_ADDR, OWN_ID)
 
 
+COMMANDS = {
+    "MKD": {
+        "arg_num": 1
+    },
+    "RMD": {
+        "arg_num": 1
+    },
+    "GWD": {
+        "arg_num": 0
+    },
+    "CWD": {
+        "arg_num": 1
+    },
+    "LST": {
+        "arg_num": 0
+    },
+    "UPL": {
+        "arg_num": 2
+    },
+    "DNL": {
+        "arg_num": 1
+    },
+    "RMF": {
+        "arg_num": 1
+    },
+    "END": {
+        "arg_num": 0
+    }
+}
+
 # ---------------------------------------------- HELPER FUNCTIONS ------------------------------------------------
+
 
 def get_millis(timestamp):
     return int(round(timestamp * 1000))
@@ -46,10 +78,178 @@ def password_valid(password):
             and re.search("(?=.*[!@#$%^&*])", password))
 
 
+# ---------------------------------------------- FILE HANDLING FUNCTIONS ------------------------------------------------
+
+def get_user_rel_path(path):
+    global USER_ROOT_DIR
+    abs_root_path = os.path.abspath(USER_ROOT_DIR)
+    abs_path = os.path.abspath(path)
+    offset = len(os.path.commonpath([abs_path, abs_root_path]))
+    if (offset == len(abs_path)):
+        return "/"
+    return abs_path[offset:]
+
+
+def get_path(path):
+    global wd
+    global USER_ROOT_DIR
+
+    # Get path relative to current working directory, or the user root being the "/"
+    if (os.path.isabs(path)):
+        path = USER_ROOT_DIR + path
+    else:
+        path = wd + "/" + path
+    return path
+
+
+def path_allowed(path):
+    global USER_ROOT_DIR
+    abs_root_path = os.path.abspath(USER_ROOT_DIR)
+    abs_path = os.path.abspath(path)
+    return os.path.commonpath([abs_path, abs_root_path]) == abs_root_path
+
+
+def mkd(dir_name):
+    path = get_path(dir_name)
+    if (os.path.exists(path)):
+        return False, "A folder with the name {} already exists".format(dir_name)
+    if (not path_allowed(path)):
+        return False, "Access Denied"
+    try:
+        os.mkdir(path)
+        return True, None
+    except Exception as e:
+        return False, e
+
+
+def rmd(dir_name):
+    path = get_path(dir_name)
+    if (not os.path.exists(path)):
+        return False, "The directory {} doesn't exist".format(dir_name)
+    if (not path_allowed(dir_name)):
+        return False, "Access Denied"
+    if (not os.path.isdir(path)):
+        return False, "{} is not a directory".format(dir_name)
+    try:
+        shutil.rmtree(path)
+        return True, None
+    except Exception as e:
+        return False, e
+
+
+def gwd():
+    global wd
+    return True, get_user_rel_path(wd)
+
+
+def cwd(path):
+    global wd
+
+    # Get path relative to current working directory, or the user root being the "/"
+    path = get_path(path)
+
+    # Make sure path is valid and exists
+    abs_path = os.path.abspath(path)
+    if (not path_allowed(path)):
+        return False, "Access Denied"
+    if (not os.path.isdir(abs_path)):
+        return False, "Directory {} does not exist".format(get_user_rel_path(path))
+
+    wd = abs_path
+    return True, get_user_rel_path(wd)
+
+
+def lst():
+    global wd
+    try:
+        return True, os.listdir(wd)
+    except Exception as e:
+        return False, e
+
+
+def upl(file_name, file_content):
+    path = get_path(file_name)
+    if (not path_allowed(path)):
+        return False, "Access Denied"
+    try:
+        with open(path, "wb") as f:
+            f.write(file_content)
+        return True, None
+    except Exception as e:
+        return False, e
+
+
+def dnl(file_name):
+    path = get_path(file_name)
+    if (not path_allowed(path)):
+        return False, "Access Denied"
+    if (not os.path.exists(path)):
+        return False, "File {} does not exist".format(file_name)
+    if (not os.path.isfile(path)):
+        return False, "{} is not a file".format(file_name)
+    try:
+        with open(path, "rb") as f:
+            return True, [get_user_rel_path(path), f.read()]
+    except Exception as e:
+        return False, e
+
+
+def rmf(file_name):
+    path = get_path(file_name)
+    if (not path_allowed(path)):
+        return False, "Access Denied"
+    if (not os.path.exists(path)):
+        return False, "File {} does not exist".format(file_name)
+    if (not os.path.isfile(path)):
+        return False, "{} is not a file".format(file_name)
+    try:
+        os.remove(path)
+        return True, None
+    except Exception as e:
+        return False, e
+
+
+def execute_command(command, args):
+    if (command == "MKD"):
+        dir_name = args[0].decode("utf-8")
+        if (len(dir_name) > 120):
+            return False, "Directory name too long"
+        return mkd(dir_name)
+    if (command == "RMD"):
+        dir_name = args[0].decode("utf-8")
+        if (len(dir_name) > 120):
+            return False, "Directory name too long"
+        return rmd(dir_name)
+    if (command == "GWD"):
+        return gwd()
+    if (command == "CWD"):
+        path = args[0].decode("utf-8")
+        if (len(path) > 120):
+            return False, "Directory name too long"
+        return cwd(path)
+    if (command == "LST"):
+        return lst()
+    if (command == "UPL"):
+        file_name = args[0].decode("utf-8")
+        if (len(file_name) > 120):
+            return False, "File name too long"
+        file_content = args[1]
+        return upl(file_name, file_content)
+    if (command == "DNL"):
+        file_name = args[0].decode("utf-8")
+        if (len(file_name) > 120):
+            return False, "File name too long"
+        return dnl(file_name)
+    if (command == "RMF"):
+        file_name = args[0].decode("utf-8")
+        if (len(file_name) > 120):
+            return False, "File name too long"
+        return rmf(file_name)
+    return False, "Invalid command"
+
+
 # --------------------------------------------- HANDSHAKE PROTOCOL -----------------------------------------------
-
 # -------------------------------- Setup  -------------------------------
-
 # Get private key
 priv_key = RSA.importKey(open(PRIVATE_KEY_FILE).read())
 cipher = PKCS1_OAEP.new(priv_key)
@@ -170,8 +370,8 @@ if not os.access(USER_FILES_DIR, os.F_OK):
     print('Error: Cannot access path ' + USER_FILES_DIR)
     sys.exit(1)
 
-# Current Working Directory
-cwd = USER_ROOT_DIR
+# Working Directory
+wd = USER_ROOT_DIR
 
 
 # start accepting messages
@@ -221,11 +421,57 @@ while (session_active):
         print("Decryption failed. Restarting... ")
         continue
 
-    print(msg_len)
-    print(len(payload) + header_len + MAC_LEN)
     if (len(payload) + header_len + MAC_LEN != msg_len):
         print("Message length incorrect. Restarting...")
         continue
 
-    # --------------------------- Parse command message  ------------------------------
+    # ------------------------------ Parse command message  ---------------------------------
     print("Received command message: ", payload)
+
+    # Destructure payload
+    try:
+        index = 0
+        arg_num = int.from_bytes(payload[index:index+1], byteorder="big")
+        index += 1
+        command = payload[index:index+3].decode("utf-8")
+        index += 3
+        args_raw = payload[index:]
+        args = []
+        index = 0
+        for i in range(arg_num-1):
+            arg_len = int.from_bytes(args_raw[index:index+8], byteorder="big")
+            index += 8
+            arg = args_raw[index:index+arg_len]
+            index += arg_len
+            args.append(arg)
+
+    except Exception as e:
+        print(e)
+        print("Command parsing failed. Invalid command or argument length")
+        # TODO: SEND A FAILURE MESSAGE HERE
+        continue
+
+    # Validate command message
+    if (command not in COMMANDS):
+        print("Invalid command {}. Restarting...".format(command))
+        # TODO: SEND A FAILURE MESSAGE HERE
+        continue
+    if (arg_num < 1 or arg_num != COMMANDS[command]["arg_num"] + 1 or len(args_raw) != index):
+        print("Invalid argument number. Restarting...")
+        # TODO: SEND A FAILURE MESSAGE HERE
+        continue
+
+    print("Received arguments: ", args)
+
+    # -------------------------------- Execute commands  -----------------------------------
+    if (command == 'END'):
+        # TODO: HANDLE EXIST SESSION AND SEND ACK MESSAGE
+        session_active = False
+        continue
+
+    status, outputs = execute_command(command, args)
+    if (type(outputs) is not list):
+        outputs = [outputs]
+
+    print(status)
+    print(outputs)

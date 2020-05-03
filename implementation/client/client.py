@@ -1,9 +1,163 @@
 from netinterface import network_interface
-netif = network_interface("../network", 'C')		# create network interface netif
+from Crypto.Util import Padding
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_OAEP, AES
+from Crypto import Random
+from getpass import getpass
+import time
+import sys
 
-status, msg = netif.receive_msg(blocking=True)
-print("I'm the client, and I received the following message: ", msg)
 
-msg = b'Hello server'
-print("Client sent message: ", msg)
-netif.send_msg("S", msg)
+# ------------------------------------------------ CONSTANTS -----------------------------------------------------
+
+NET_ADDR = "../network/"
+SERVER_ID = 'S'
+SERVER_INFO_FILE = "./server_pub_key.txt"
+MAX_TRIALS = 3
+MAC_LEN = 16
+ACK_MSG_LEN = 46
+
+
+# ---------------------------------------------- HELPER FUNCTIONS ------------------------------------------------
+
+
+def get_millis(timestamp):
+    return int(round(timestamp * 1000))
+
+
+def timestamp_valid(millis):
+    now = get_millis(time.time())
+    diff = now - millis
+    if (diff > 0 and diff < 60 * 1000):
+        return True
+    return False
+
+# --------------------------------------------- HANDSHAKE PROTOCOL -----------------------------------------------
+
+
+print("Welcome to the FAST Protocol client!")
+
+# Get server public key
+pub_key = RSA.importKey(open(SERVER_INFO_FILE).read())
+public_cipher = PKCS1_OAEP.new(pub_key)
+
+session_active = False
+while (not session_active):
+
+    # Get user ID
+    user_id = input("Please enter your ID: ").rstrip().lstrip().upper()
+    if (len(user_id) > 1):
+        user_id = user_id[0]
+
+    # create network interface netif
+    netif = network_interface(NET_ADDR, user_id)
+
+    # Get password
+    password = getpass("Please enter your password: ").rstrip().lstrip()
+
+    response_valid = False
+    trials = 0
+    while ((not session_active or not response_valid) and trials < MAX_TRIALS):
+        print("Starting a new session...")
+        response_valid = True
+
+        # -------------------------------- Initiate protocol  -------------------------------
+
+        # get session key
+        session_key = Random.get_random_bytes(32)
+
+        # construct initiation message
+        initiation_msg = b''
+        initiation_msg += user_id.encode('utf-8')
+        initiation_msg += Padding.pad(password.encode("utf-8"), 32, 'pkcs7')
+        initiation_msg += session_key
+        now = get_millis(time.time())  # get timestamp in millisecond
+        initiation_msg += now.to_bytes(32, 'big')
+
+        # encrypt initiation message
+        ciphertext = public_cipher.encrypt(initiation_msg)
+
+        # send initiation message
+        netif.send_msg(SERVER_ID, ciphertext)
+
+        # ---------------------------- Wait for server response  ---------------------------
+        print("Waiting for server response...")
+        status, ack_msg = netif.receive_msg(blocking=True)
+
+        # ---------------------------- Validate server response  ---------------------------
+        print("Checking server response...")
+
+        if (len(ack_msg) < MAC_LEN):
+            response_valid = False
+            continue
+
+        encrypted_payload = ack_msg[:-MAC_LEN]
+        auth_tag = ack_msg[-MAC_LEN:]
+
+        # Authenticate message
+        nonce = 1
+        nonce_bytes = nonce.to_bytes(16, byteorder="big")
+        cipher = AES.new(session_key, AES.MODE_GCM,
+                         nonce=nonce_bytes, mac_len=MAC_LEN)
+
+        try:
+            payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
+        except Exception as e:
+            response_valid = False
+            trials += 1
+            print("Bad response. Trying again... ")
+            continue
+
+        if (len(payload) != ACK_MSG_LEN):
+            response_valid = False
+            trials += 1
+            print("Bad response. Trying again... ")
+            continue
+
+        # Deconstruct message
+        index = 0
+        response_id_bytes = payload[index:index+1]
+        response_id = response_id_bytes.decode("utf-8")
+        index += 1
+
+        ack_bytes = payload[index:index + 13]
+        ack = ack_bytes.decode("utf-8")
+        index += 13
+
+        time_bytes = payload[index: index + 32]
+        timestamp = int.from_bytes(time_bytes, byteorder="big")
+        index += 32
+
+        # TODO: check here that there isn't more to the message
+
+        # Validate message
+        if (response_id != user_id):
+            response_valid = False
+            trials += 1
+            print("Bad response. Trying again...")
+            continue
+
+        if (ack != "session_start"):
+            response_valid = False
+            trials += 1
+            print("Bad response. Trying again...")
+            continue
+
+        if (not timestamp_valid(timestamp)):
+            response_valid = False
+            trials += 1
+            print("Bad response. Trying again...")
+            continue
+
+        # -------------------------------- Start session  -------------------------------
+        if (response_valid):
+            print("Successfully logged in...")
+            session_active = True
+
+    if (not session_active):
+        print("After {} trials, no valid server response. Try again!".format(MAX_TRIALS))
+
+# --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
+
+
+# -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------

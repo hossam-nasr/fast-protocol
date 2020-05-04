@@ -194,12 +194,17 @@ while (not session_active):
 print("Start typing commands!")
 send_sqn = 0
 receive_sqn = 1
+wd = "/"
 while (session_active):
     # Get command and args
-    raw_command = input("~$ ").rstrip().lstrip()
+    raw_command = input("~" + wd + "$ ").rstrip().lstrip()
     commands = raw_command.split()
     command = commands[0].upper()
     args = commands[1:]
+
+    if (command not in COMMANDS):
+        print("Unknown command {}".format(command))
+        continue
 
     # ------------------------- Construct command message  ----------------------------
     # payload
@@ -328,5 +333,8 @@ while (session_active):
         session_key = b""
         print("Logged out.")
 
-    for output in outputs:
-        print(output)
+    if (command == "CWD" and len(outputs) == 1):
+        wd = outputs[0]
+    else:
+        for output in outputs:
+            print(output)

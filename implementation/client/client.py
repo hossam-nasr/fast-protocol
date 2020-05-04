@@ -11,7 +11,8 @@ import sys
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
 
 NET_ADDR = "../network/"
-SERVER_ID = 'S'
+SERVER_ID_TUNNEL = 'T'
+SERVER_ID_HANDSHAKE = 'H'
 SERVER_INFO_FILE = "./server_pub_key.txt"
 MAX_TRIALS = 3
 MAC_LEN = 16
@@ -65,268 +66,301 @@ def timestamp_valid(millis):
 # --------------------------------------------- HANDSHAKE PROTOCOL -----------------------------------------------
 
 
-print("Welcome to the FAST Protocol client!")
+def handshake():
+    # Get server public key
+    pub_key = RSA.importKey(open(SERVER_INFO_FILE).read())
+    public_cipher = PKCS1_OAEP.new(pub_key)
 
-# Get server public key
-pub_key = RSA.importKey(open(SERVER_INFO_FILE).read())
-public_cipher = PKCS1_OAEP.new(pub_key)
+    session_active = False
+    while (not session_active):
 
-session_active = False
-while (not session_active):
+        # Get user ID
+        user_id = input("Please enter your ID: ").rstrip().lstrip().upper()
+        if (len(user_id) > 1):
+            user_id = user_id[0]
 
-    # Get user ID
-    user_id = input("Please enter your ID: ").rstrip().lstrip().upper()
-    if (len(user_id) > 1):
-        user_id = user_id[0]
+        # create network interface netif
+        netif = network_interface(NET_ADDR, user_id)
 
-    # create network interface netif
-    netif = network_interface(NET_ADDR, user_id)
+        # Get password
+        password = getpass("Please enter your password: ").rstrip().lstrip()
 
-    # Get password
-    password = getpass("Please enter your password: ").rstrip().lstrip()
+        response_valid = False
+        trials = 0
+        while ((not session_active or not response_valid) and trials < MAX_TRIALS):
+            print("Starting a new session...")
+            response_valid = True
 
-    response_valid = False
-    trials = 0
-    while ((not session_active or not response_valid) and trials < MAX_TRIALS):
-        print("Starting a new session...")
-        response_valid = True
+            # -------------------------------- Initiate protocol  -------------------------------
 
-        # -------------------------------- Initiate protocol  -------------------------------
+            # get session key
+            session_key = Random.get_random_bytes(32)
 
-        # get session key
-        session_key = Random.get_random_bytes(32)
+            # construct initiation message
+            initiation_msg = b''
+            initiation_msg += user_id.encode('utf-8')
+            initiation_msg += Padding.pad(password.encode("utf-8"),
+                                          32, 'pkcs7')
+            initiation_msg += session_key
+            now = get_millis(time.time())  # get timestamp in millisecond
+            initiation_msg += now.to_bytes(32, 'big')
 
-        # construct initiation message
-        initiation_msg = b''
-        initiation_msg += user_id.encode('utf-8')
-        initiation_msg += Padding.pad(password.encode("utf-8"), 32, 'pkcs7')
-        initiation_msg += session_key
-        now = get_millis(time.time())  # get timestamp in millisecond
-        initiation_msg += now.to_bytes(32, 'big')
+            # encrypt initiation message
+            ciphertext = public_cipher.encrypt(initiation_msg)
 
-        # encrypt initiation message
-        ciphertext = public_cipher.encrypt(initiation_msg)
+            # send initiation message
+            netif.send_msg(SERVER_ID_HANDSHAKE, ciphertext)
 
-        # send initiation message
-        netif.send_msg(SERVER_ID, ciphertext)
+            # ---------------------------- Wait for server response  ---------------------------
+            print("Waiting for server response...")
+            _status, ack_msg = netif.receive_msg(blocking=True)
 
-        # ---------------------------- Wait for server response  ---------------------------
-        print("Waiting for server response...")
-        status, ack_msg = netif.receive_msg(blocking=True)
+            # ---------------------------- Validate server response  ---------------------------
+            print("Checking server response...")
 
-        # ---------------------------- Validate server response  ---------------------------
-        print("Checking server response...")
+            if (len(ack_msg) < MAC_LEN):
+                response_valid = False
+                continue
 
-        if (len(ack_msg) < MAC_LEN):
-            response_valid = False
-            continue
+            encrypted_payload = ack_msg[:-MAC_LEN]
+            auth_tag = ack_msg[-MAC_LEN:]
 
-        encrypted_payload = ack_msg[:-MAC_LEN]
-        auth_tag = ack_msg[-MAC_LEN:]
+            # Authenticate message
+            nonce = 1
+            nonce_bytes = nonce.to_bytes(16, byteorder="big")
+            cipher = AES.new(session_key, AES.MODE_GCM,
+                             nonce=nonce_bytes, mac_len=MAC_LEN)
 
-        # Authenticate message
-        nonce = 1
-        nonce_bytes = nonce.to_bytes(16, byteorder="big")
-        cipher = AES.new(session_key, AES.MODE_GCM,
-                         nonce=nonce_bytes, mac_len=MAC_LEN)
+            try:
+                payload = cipher.decrypt_and_verify(
+                    encrypted_payload, auth_tag)
+            except Exception:
+                response_valid = False
+                trials += 1
+                print("Bad response. Trying again... ")
+                continue
 
-        try:
-            payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-        except Exception as e:
-            response_valid = False
-            trials += 1
-            print("Bad response. Trying again... ")
-            continue
+            if (len(payload) != ACK_MSG_LEN):
+                response_valid = False
+                trials += 1
+                print("Bad response. Trying again... ")
+                continue
 
-        if (len(payload) != ACK_MSG_LEN):
-            response_valid = False
-            trials += 1
-            print("Bad response. Trying again... ")
-            continue
+            # Deconstruct message
+            index = 0
+            response_id_bytes = payload[index:index+1]
+            response_id = response_id_bytes.decode("utf-8")
+            index += 1
 
-        # Deconstruct message
-        index = 0
-        response_id_bytes = payload[index:index+1]
-        response_id = response_id_bytes.decode("utf-8")
-        index += 1
+            ack_bytes = payload[index:index + 13]
+            ack = ack_bytes.decode("utf-8")
+            index += 13
 
-        ack_bytes = payload[index:index + 13]
-        ack = ack_bytes.decode("utf-8")
-        index += 13
+            time_bytes = payload[index: index + 32]
+            timestamp = int.from_bytes(time_bytes, byteorder="big")
+            index += 32
 
-        time_bytes = payload[index: index + 32]
-        timestamp = int.from_bytes(time_bytes, byteorder="big")
-        index += 32
+            # TODO: check here that there isn't more to the message
 
-        # TODO: check here that there isn't more to the message
+            # Validate message
+            if (response_id != user_id):
+                response_valid = False
+                trials += 1
+                print("Bad response. Trying again...")
+                continue
 
-        # Validate message
-        if (response_id != user_id):
-            response_valid = False
-            trials += 1
-            print("Bad response. Trying again...")
-            continue
+            if (ack != "session_start"):
+                response_valid = False
+                trials += 1
+                print("Bad response. Trying again...")
+                continue
 
-        if (ack != "session_start"):
-            response_valid = False
-            trials += 1
-            print("Bad response. Trying again...")
-            continue
+            if (not timestamp_valid(timestamp)):
+                response_valid = False
+                trials += 1
+                print("Bad response. Trying again...")
+                continue
 
-        if (not timestamp_valid(timestamp)):
-            response_valid = False
-            trials += 1
-            print("Bad response. Trying again...")
-            continue
+            # -------------------------------- Start session  -------------------------------
+            if (response_valid):
+                print("Successfully logged in...")
+                session_active = True
 
-        # -------------------------------- Start session  -------------------------------
-        if (response_valid):
-            print("Successfully logged in...")
-            session_active = True
+        if (not session_active):
+            print(
+                "After {} trials, no valid server response. Try again!".format(MAX_TRIALS))
 
-    if (not session_active):
-        print("After {} trials, no valid server response. Try again!".format(MAX_TRIALS))
+    tunnel(user_id, session_key)
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
 
 
 # -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------
-print("Start typing commands!")
-send_sqn = 0
-receive_sqn = 1
-while (session_active):
-    # Get command and args
-    raw_command = input("~$ ").rstrip().lstrip()
-    commands = raw_command.split()
-    command = commands[0].upper()
-    args = commands[1:]
+def tunnel(user_id, session_key):
+    print("Start typing commands!")
+    send_sqn = 0
+    receive_sqn = 1
+    wd = "/"
+    session_active = True
+    netif = network_interface(NET_ADDR, user_id)
+    while (session_active):
+        # Get command and args
+        raw_command = input("~" + wd + "$ ").rstrip().lstrip()
+        commands = raw_command.split()
+        command = commands[0].upper()
+        args = commands[1:]
 
-    # ------------------------- Construct command message  ----------------------------
-    # payload
-    payload = b""
-    arg_num = len(commands)
-    payload += arg_num.to_bytes(1, byteorder="big")
-    payload += command.encode("utf-8")
-    for arg in args:
-        arg_bytes = arg.encode("utf-8")
-        arg_len_bytes = len(arg_bytes).to_bytes(8, byteorder="big")
-        payload += arg_len_bytes + arg_bytes
+        if (command not in COMMANDS):
+            print("Unknown command {}".format(command))
+            continue
 
-    # header
-    version_bytes = b'\x01\x00'  # version 1.0
-    send_sqn += 1
-    rnd = Random.get_random_bytes(8)
-    nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-    # Header length is 24 bytes (2 version number + 4 length + 16 nonce)
-    msg_len = 22 + len(payload) + MAC_LEN
-    msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
-    header = version_bytes + msg_len_bytes + nonce
+        # ------------------------- Construct command message  ----------------------------
+        # payload
+        payload = b""
+        arg_num = len(commands)
+        payload += arg_num.to_bytes(1, byteorder="big")
+        payload += command.encode("utf-8")
+        for arg in args:
+            arg_bytes = arg.encode("utf-8")
+            arg_len_bytes = len(arg_bytes).to_bytes(8, byteorder="big")
+            payload += arg_len_bytes + arg_bytes
 
-    # encrypt message
-    cipher = AES.new(session_key, AES.MODE_GCM,
-                     nonce=nonce, mac_len=MAC_LEN)
-    cipher.update(header)
-    encrypted_payload, auth_tag = cipher.encrypt_and_digest(
-        payload)
+        # header
+        version_bytes = b'\x01\x00'  # version 1.0
+        send_sqn += 1
+        rnd = Random.get_random_bytes(8)
+        nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
+        # Header length is 23 bytes (2 version number + 4 length + 1 user ID + 16 nonce)
+        msg_len = 23 + len(payload) + MAC_LEN
+        msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
+        user_id_bytes = user_id.encode("utf-8")
+        header = version_bytes + msg_len_bytes + user_id_bytes + nonce
 
-    # ---------------------------- Send command message  -------------------------------
-    netif.send_msg(SERVER_ID, header + encrypted_payload + auth_tag)
+        # encrypt message
+        cipher = AES.new(session_key, AES.MODE_GCM,
+                         nonce=nonce, mac_len=MAC_LEN)
+        cipher.update(header)
+        encrypted_payload, auth_tag = cipher.encrypt_and_digest(
+            payload)
 
-    # if the command was END, end the session, regardless of server response
-    if (command == "END"):
-        print("Logging out...")
-        session_active = False
+        # ---------------------------- Send command message  -------------------------------
+        netif.send_msg(SERVER_ID_TUNNEL, header + encrypted_payload + auth_tag)
 
-    # -------------------- Wait for server acknowledgment message  ----------------------
-    status, msg = netif.receive_msg(blocking=True)
+        # if the command was END, end the session, regardless of server response
+        if (command == "END"):
+            print("Logging out...")
+            session_active = False
 
-    # ----------------------- Validate acknowledgement message  ----------------------------
-    header_len = 22
-    if (len(msg) < header_len + MAC_LEN):
-        print("Error receiving response from server: Message length too short.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
+        # -------------------- Wait for server acknowledgment message  ----------------------
+        _status, msg = netif.receive_msg(blocking=True)
 
-    # Deconstruct message
-    header = msg[0:header_len]
-    encrypted_payload = msg[header_len:-MAC_LEN]
-    auth_tag = msg[-MAC_LEN:]
-    index = 0
-    version = header[0:2]
-    index += 2
-    msg_len = int.from_bytes(header[index:index+4], byteorder="big")
-    index += 4
-    nonce = header[index:index+NONCE_LEN]
-    new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+        # ----------------------- Validate acknowledgement message  ----------------------------
+        header_len = 23
+        if (len(msg) < header_len + MAC_LEN):
+            print("Error receiving response from server: Message length too short.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
 
-    # Validate message
-    if (version != b'\x01\x00'):
-        print("Error receiving response from server: Unsupported protocol version.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
-    if (new_sqn <= receive_sqn):
-        print("Error receiving response from server: Sequence number too small.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
-    else:
-        receive_sqn = new_sqn
-
-    # Decrypt message
-    cipher = AES.new(session_key, AES.MODE_GCM, nonce=nonce, mac_len=MAC_LEN)
-    cipher.update(header)
-    try:
-        payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-    except Exception as e:
-        print("Error receiving response from server: Authentication failed with error: ", e)
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
-
-    if (len(payload) + header_len + MAC_LEN != msg_len):
-        print("Error receiving response from server: Message format corrupted.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
-
-    # ------------------------------ Parse command message  ---------------------------------
-
-    # Destructure payload
-    try:
+        # Deconstruct message
+        header = msg[0:header_len]
+        encrypted_payload = msg[header_len:-MAC_LEN]
+        auth_tag = msg[-MAC_LEN:]
         index = 0
-        arg_num = int.from_bytes(payload[index:index+1], byteorder="big")
+        version = header[0:2]
+        index += 2
+        msg_len = int.from_bytes(header[index:index+4], byteorder="big")
+        index += 4
+        resp_id = header[index:index+1].decode("utf-8")
         index += 1
-        ack = payload[index:index+len("acknowledged")].decode("utf-8")
-        index += len("acknowledged")
-        outputs_raw = payload[index:]
-        outputs = []
-        index = 0
-        for i in range(arg_num-1):
-            output_len = int.from_bytes(
-                outputs_raw[index:index+8], byteorder="big")
-            index += 8
-            output = outputs_raw[index:index+output_len]
-            index += output_len
-            outputs.append(output.decode("utf-8"))
+        nonce = header[index:index+NONCE_LEN]
+        new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
 
-    except Exception as e:
-        print("Error receiving response from server: Message format corrupted.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
+        # Validate message
+        if (version != b'\x01\x00'):
+            print("Received version: ", version)
+            print("Error receiving response from server: Unsupported protocol version.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
+        if (new_sqn <= receive_sqn):
+            print("Error receiving response from server: Sequence number too small.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
+        else:
+            receive_sqn = new_sqn
+        if (resp_id != SERVER_ID_TUNNEL):
+            print("Error receiving response from server: Wrong ID.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
 
-    # Validate command message
-    if (ack != "acknowledged"):
-        print("Error receiving response from server: Message format corrupted.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
-    if (arg_num < 1 or (arg_num - 1 not in COMMANDS[command]["output_nums"] and "*" not in COMMANDS[command]["output_nums"]) or len(outputs_raw) != index):
-        print("Error receiving response from server: Message format corrupted.")
-        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
-        continue
+        # Decrypt message
+        cipher = AES.new(session_key, AES.MODE_GCM,
+                         nonce=nonce, mac_len=MAC_LEN)
+        cipher.update(header)
+        try:
+            payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
+        except Exception as e:
+            print(
+                "Error receiving response from server: Authentication failed with error: ", e)
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
 
-    # -------------------------------- Display output  -----------------------------------
-    # Exit from session if command was END
-    if (command == "END"):
-        session_active = False
-        session_key = b""
-        print("Logged out.")
+        if (len(payload) + header_len + MAC_LEN != msg_len):
+            print("Error receiving response from server: Message format corrupted.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
 
-    for output in outputs:
-        print(output)
+        # ------------------------------ Parse command message  ---------------------------------
+
+        # Destructure payload
+        try:
+            index = 0
+            arg_num = int.from_bytes(payload[index:index+1], byteorder="big")
+            index += 1
+            ack = payload[index:index+len("acknowledged")].decode("utf-8")
+            index += len("acknowledged")
+            outputs_raw = payload[index:]
+            outputs = []
+            index = 0
+            for _i in range(arg_num-1):
+                output_len = int.from_bytes(
+                    outputs_raw[index:index+8], byteorder="big")
+                index += 8
+                output = outputs_raw[index:index+output_len]
+                index += output_len
+                outputs.append(output.decode("utf-8"))
+
+        except Exception as e:
+            print("Error receiving response from server: Message format corrupted.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
+
+        # Validate command message
+        if (ack != "acknowledged"):
+            print("Error receiving response from server: Message format corrupted.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
+        if (arg_num < 1 or (arg_num - 1 not in COMMANDS[command]["output_nums"] and "*" not in COMMANDS[command]["output_nums"]) or len(outputs_raw) != index):
+            print("Error receiving response from server: Message format corrupted.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
+
+        # -------------------------------- Display output  -----------------------------------
+        # Exit from session if command was END
+        if (command == "END"):
+            session_active = False
+            session_key = b""
+            print("Logged out.")
+
+        if (command == "CWD" and len(outputs) == 1):
+            wd = outputs[0]
+        else:
+            for output in outputs:
+                print(output)
+    print("Please login to start using FAST!")
+    handshake()
+
+
+# Intiate client
+print("Welcome to the FAST Protocol client!")
+print("Please login to start using FAST!")
+handshake()

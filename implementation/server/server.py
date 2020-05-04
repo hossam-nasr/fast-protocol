@@ -126,7 +126,7 @@ def rmd(dir_name):
     path = get_path(dir_name)
     if (not os.path.exists(path)):
         return False, "The directory {} doesn't exist".format(dir_name)
-    if (not path_allowed(dir_name)):
+    if (not path_allowed(path)):
         return False, "Access Denied"
     if (not os.path.isdir(path)):
         return False, "{} is not a directory".format(dir_name)
@@ -268,9 +268,6 @@ def get_outputs(command, status, output):
         else:
             new_outputs.append("failure")
             new_outputs.append(output)
-    else:
-        new_outputs.append("failure")
-        new_outputs.append(output)
     return new_outputs
 
 
@@ -379,9 +376,7 @@ while(not message_valid and not session_active):
 
 # -------------------------------- Setup  -------------------------------
 # Get Directories
-if (USER_FILES_DIR[-1] != "/" and USER_FILES_DIR[-1] != '\\'):
-    USER_FILES_DIR += "/"
-USER_ROOT_DIR = USER_FILES_DIR + user_id + "/"
+USER_ROOT_DIR = os.path.abspath(USER_FILES_DIR + "/" + user_id)
 
 # Create directories if they don't exist
 if not (os.path.exists(USER_FILES_DIR)):

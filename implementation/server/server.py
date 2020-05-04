@@ -248,6 +248,32 @@ def execute_command(command, args):
     return False, "Invalid command"
 
 
+def get_outputs(command, status, output):
+    new_outputs = []
+    if (command == "MKD" or command == "RMD" or command == "UPL" or command == "RMF"):
+        if (status):
+            new_outputs.append("success")
+        else:
+            new_outputs.append("failure")
+            new_outputs.append(output)
+    if (command == "GWD" or command == "CWD"):
+        if (status):
+            new_outputs.append(output)
+        else:
+            new_outputs.append("failure")
+            new_outputs.append(output)
+    if (command == "LST" or command == "DNL"):
+        if (status):
+            new_outputs = output
+        else:
+            new_outputs.append("failure")
+            new_outputs.append(output)
+    else:
+        new_outputs.append("failure")
+        new_outputs.append(output)
+    return new_outputs
+
+
 # --------------------------------------------- HANDSHAKE PROTOCOL -----------------------------------------------
 # -------------------------------- Setup  -------------------------------
 # Get private key
@@ -376,7 +402,7 @@ wd = USER_ROOT_DIR
 
 # start accepting messages
 print("Accepting messages...")
-send_sqn = 2
+send_sqn = 1
 receive_sqn = 0
 while (session_active):
     # ------------------------- Wait for command message  ----------------------------
@@ -384,6 +410,7 @@ while (session_active):
     print("Command message received.")
 
     # ------------------------- Validate command message  ----------------------------
+    print("Validating message...")
     header_len = 22
     if (len(msg) < header_len + MAC_LEN):
         print("Message length too short. Discarding message...")
@@ -425,8 +452,11 @@ while (session_active):
         print("Message length incorrect. Restarting...")
         continue
 
+    print("Message valdidation successful...")
+
     # ------------------------------ Parse command message  ---------------------------------
-    print("Received command message: ", payload)
+
+    print("Parsing message...")
 
     # Destructure payload
     try:
@@ -461,17 +491,57 @@ while (session_active):
         # TODO: SEND A FAILURE MESSAGE HERE
         continue
 
+    print("Received command: ", command)
     print("Received arguments: ", args)
 
     # -------------------------------- Execute commands  -----------------------------------
+    print("Executing command...")
     if (command == 'END'):
-        # TODO: HANDLE EXIST SESSION AND SEND ACK MESSAGE
+        print("Ending session...")
         session_active = False
-        continue
+        status = True
+        output = None
+    else:
+        status, output = execute_command(command, args)
 
-    status, outputs = execute_command(command, args)
-    if (type(outputs) is not list):
-        outputs = [outputs]
+    print("Command executed.")
+    outputs = get_outputs(command, status, output)
 
-    print(status)
-    print(outputs)
+    # ------------------------- Construct acknowledgment message  --------------------------------
+    print("Sending acknowledgment message...")
+    # Add 1 extra arguments to account for "acknowledged"
+    arg_num = len(outputs) + 1
+
+    # construct payload
+    payload = b""
+    payload += arg_num.to_bytes(1, byteorder="big")
+    payload += b"acknowledged"
+    for output in outputs:
+        if (not type(output) == type(b"")):
+            output = output.encode("utf-8")
+        len_bytes = len(output).to_bytes(8, byteorder="big")
+        payload += len_bytes + output
+
+    # construct header
+    version_bytes = b'\x01\x00'  # version 1.0
+    send_sqn += 1
+    rnd = Random.get_random_bytes(8)
+    nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
+    # Header length is 22 bytes (2 version number + 4 length + 16 nonce)
+    msg_len = 22 + len(payload) + MAC_LEN
+    msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
+    header = version_bytes + msg_len_bytes + nonce
+
+    # encrypt message
+    cipher = AES.new(session_key, AES.MODE_GCM,
+                     nonce=nonce, mac_len=MAC_LEN)
+    cipher.update(header)
+    encrypted_payload, auth_tag = cipher.encrypt_and_digest(
+        payload)
+
+    # ---------------------------- Send acknowledgment message  --------------------------------------
+    netif.send_msg(user_id, header + encrypted_payload + auth_tag)
+    print("Acknowledgment message sent.")
+
+if (not session_active):
+    session_key = b""

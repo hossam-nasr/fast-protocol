@@ -6,6 +6,7 @@ from Crypto import Random
 from getpass import getpass
 import time
 import sys
+import threading
 
 
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
@@ -189,14 +190,25 @@ def handshake():
         if (not session_active):
             print(
                 "After {} trials, no valid server response. Try again!".format(MAX_TRIALS))
+        else:
+            # Start a new thread to handle the tunnel protocol
+            threading.excepthook = lambda: sys.exit(1)
+            tunnel_thread = threading.Thread(
+                target=tunnel, args=(user_id, session_key))
+            tunnel_thread.start()
+            # Wait for thread to finish
+            tunnel_thread.join()
 
-    tunnel(user_id, session_key)
+            # Prepare to accept a new session
+            session_active = False
+            session_key = b""
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
 
 
 # -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------
 def tunnel(user_id, session_key):
+    # -------------------------------- Setup  ----------------------------------
     print("Start typing commands!")
     send_sqn = 0
     receive_sqn = 1
@@ -356,8 +368,9 @@ def tunnel(user_id, session_key):
         else:
             for output in outputs:
                 print(output)
+
+    # Exit this thread and hand back to Handshake!
     print("Please login to start using FAST!")
-    handshake()
 
 
 # Intiate client

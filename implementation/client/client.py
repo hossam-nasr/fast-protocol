@@ -18,6 +18,36 @@ MAC_LEN = 16
 ACK_MSG_LEN = 46
 NONCE_LEN = 16
 
+COMMANDS = {
+    "MKD": {
+        "output_nums": [1, 2]
+    },
+    "RMD": {
+        "output_nums": [1, 2]
+    },
+    "GWD": {
+        "output_nums": [1, 2]
+    },
+    "CWD": {
+        "output_nums": [1, 2]
+    },
+    "LST": {
+        "output_nums": ['*']
+    },
+    "UPL": {
+        "output_nums": [1, 2]
+    },
+    "DNL": {
+        "output_nums": [2]
+    },
+    "RMF": {
+        "output_nums": [1, 2]
+    },
+    "END": {
+        "output_nums": [0]
+    }
+}
+
 # ---------------------------------------------- HELPER FUNCTIONS ------------------------------------------------
 
 
@@ -168,7 +198,7 @@ while (session_active):
     # Get command and args
     raw_command = input("~$ ").rstrip().lstrip()
     commands = raw_command.split()
-    command = commands[0]
+    command = commands[0].upper()
     args = commands[1:]
 
     # ------------------------- Construct command message  ----------------------------
@@ -176,7 +206,7 @@ while (session_active):
     payload = b""
     arg_num = len(commands)
     payload += arg_num.to_bytes(1, byteorder="big")
-    payload += command.upper().encode("utf-8")
+    payload += command.encode("utf-8")
     for arg in args:
         arg_bytes = arg.encode("utf-8")
         arg_len_bytes = len(arg_bytes).to_bytes(8, byteorder="big")
@@ -201,3 +231,102 @@ while (session_active):
 
     # ---------------------------- Send command message  -------------------------------
     netif.send_msg(SERVER_ID, header + encrypted_payload + auth_tag)
+
+    # if the command was END, end the session, regardless of server response
+    if (command == "END"):
+        print("Logging out...")
+        session_active = False
+
+    # -------------------- Wait for server acknowledgment message  ----------------------
+    status, msg = netif.receive_msg(blocking=True)
+
+    # ----------------------- Validate acknowledgement message  ----------------------------
+    header_len = 22
+    if (len(msg) < header_len + MAC_LEN):
+        print("Error receiving response from server: Message length too short.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+
+    # Deconstruct message
+    header = msg[0:header_len]
+    encrypted_payload = msg[header_len:-MAC_LEN]
+    auth_tag = msg[-MAC_LEN:]
+    index = 0
+    version = header[0:2]
+    index += 2
+    msg_len = int.from_bytes(header[index:index+4], byteorder="big")
+    index += 4
+    nonce = header[index:index+NONCE_LEN]
+    new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+
+    # Validate message
+    if (version != b'\x01\x00'):
+        print("Error receiving response from server: Unsupported protocol version.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+    if (new_sqn <= receive_sqn):
+        print("Error receiving response from server: Sequence number too small.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+    else:
+        receive_sqn = new_sqn
+
+    # Decrypt message
+    cipher = AES.new(session_key, AES.MODE_GCM, nonce=nonce, mac_len=MAC_LEN)
+    cipher.update(header)
+    try:
+        payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
+    except Exception as e:
+        print("Error receiving response from server: Authentication failed with error: ", e)
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+
+    if (len(payload) + header_len + MAC_LEN != msg_len):
+        print("Error receiving response from server: Message format corrupted.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+
+    # ------------------------------ Parse command message  ---------------------------------
+
+    # Destructure payload
+    try:
+        index = 0
+        arg_num = int.from_bytes(payload[index:index+1], byteorder="big")
+        index += 1
+        ack = payload[index:index+len("acknowledged")].decode("utf-8")
+        index += len("acknowledged")
+        outputs_raw = payload[index:]
+        outputs = []
+        index = 0
+        for i in range(arg_num-1):
+            output_len = int.from_bytes(
+                outputs_raw[index:index+8], byteorder="big")
+            index += 8
+            output = outputs_raw[index:index+output_len]
+            index += output_len
+            outputs.append(output.decode("utf-8"))
+
+    except Exception as e:
+        print("Error receiving response from server: Message format corrupted.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+
+    # Validate command message
+    if (ack != "acknowledged"):
+        print("Error receiving response from server: Message format corrupted.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+    if (arg_num < 1 or (arg_num - 1 not in COMMANDS[command]["output_nums"] and "*" not in COMMANDS[command]["output_nums"]) or len(outputs_raw) != index):
+        print("Error receiving response from server: Message format corrupted.")
+        print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        continue
+
+    # -------------------------------- Display output  -----------------------------------
+    # Exit from session if command was END
+    if (command == "END"):
+        session_active = False
+        session_key = b""
+        print("Logged out.")
+
+    for output in outputs:
+        print(output)

@@ -117,8 +117,8 @@ def mkd(dir_name):
     try:
         os.mkdir(path)
         return True, None
-    except Exception as e:
-        return False, e
+    except Exception:
+        return False, "Couldn't create directory."
 
 
 def rmd(dir_name):
@@ -132,8 +132,8 @@ def rmd(dir_name):
     try:
         shutil.rmtree(path)
         return True, None
-    except Exception as e:
-        return False, e
+    except Exception:
+        return False, "Delete failed."
 
 
 def gwd():
@@ -162,8 +162,8 @@ def lst():
     global wd
     try:
         return True, os.listdir(wd)
-    except Exception as e:
-        return False, e
+    except Exception:
+        return False, "Unknown error occured."
 
 
 def upl(file_name, file_content):
@@ -174,8 +174,8 @@ def upl(file_name, file_content):
         with open(path, "wb") as f:
             f.write(file_content)
         return True, None
-    except Exception as e:
-        return False, e
+    except Exception:
+        return False, "Upload failed."
 
 
 def dnl(file_name):
@@ -189,8 +189,8 @@ def dnl(file_name):
     try:
         with open(path, "rb") as f:
             return True, [get_user_rel_path(path), f.read()]
-    except Exception as e:
-        return False, e
+    except Exception:
+        return False, "Download failed."
 
 
 def rmf(file_name):
@@ -204,8 +204,8 @@ def rmf(file_name):
     try:
         os.remove(path)
         return True, None
-    except Exception as e:
-        return False, e
+    except Exception:
+        return False, "Delete failed."
 
 
 def execute_command(command, args):
@@ -435,7 +435,7 @@ def tunnel(user_id, session_key):
 
         # ------------------------- Validate command message  ----------------------------
         print("Validating message...")
-        header_len = 22
+        header_len = 23
         if (len(msg) < header_len + MAC_LEN):
             print("Message length too short. Discarding message...")
             continue
@@ -449,8 +449,14 @@ def tunnel(user_id, session_key):
         index += 2
         msg_len = int.from_bytes(header[index:index+4], byteorder="big")
         index += 4
+        resp_id = header[index:index+1].decode("utf-8")
+        index += 1
         nonce = header[index:index+NONCE_LEN]
         new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+
+        # Only look at message from the current user
+        if (resp_id != user_id):
+            continue
 
         # Validate message
         if (version != b'\x01\x00'):
@@ -554,10 +560,11 @@ def tunnel(user_id, session_key):
         send_sqn += 1
         rnd = Random.get_random_bytes(8)
         nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-        # Header length is 22 bytes (2 version number + 4 length + 16 nonce)
-        msg_len = 22 + len(payload) + MAC_LEN
+        # Header length is 23 bytes (2 version number + 4 length + 1 ID +  16 nonce)
+        msg_len = 23 + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
-        header = version_bytes + msg_len_bytes + nonce
+        own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
+        header = version_bytes + msg_len_bytes + own_id_bytes + nonce
 
         # encrypt message
         cipher = AES.new(session_key, AES.MODE_GCM,

@@ -230,10 +230,11 @@ def tunnel(user_id, session_key):
         send_sqn += 1
         rnd = Random.get_random_bytes(8)
         nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-        # Header length is 24 bytes (2 version number + 4 length + 16 nonce)
-        msg_len = 22 + len(payload) + MAC_LEN
+        # Header length is 23 bytes (2 version number + 4 length + 1 user ID + 16 nonce)
+        msg_len = 23 + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
-        header = version_bytes + msg_len_bytes + nonce
+        user_id_bytes = user_id.encode("utf-8")
+        header = version_bytes + msg_len_bytes + user_id_bytes + nonce
 
         # encrypt message
         cipher = AES.new(session_key, AES.MODE_GCM,
@@ -254,7 +255,7 @@ def tunnel(user_id, session_key):
         _status, msg = netif.receive_msg(blocking=True)
 
         # ----------------------- Validate acknowledgement message  ----------------------------
-        header_len = 22
+        header_len = 23
         if (len(msg) < header_len + MAC_LEN):
             print("Error receiving response from server: Message length too short.")
             print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
@@ -269,6 +270,8 @@ def tunnel(user_id, session_key):
         index += 2
         msg_len = int.from_bytes(header[index:index+4], byteorder="big")
         index += 4
+        resp_id = header[index:index+1].decode("utf-8")
+        index += 1
         nonce = header[index:index+NONCE_LEN]
         new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
 
@@ -284,6 +287,10 @@ def tunnel(user_id, session_key):
             continue
         else:
             receive_sqn = new_sqn
+        if (resp_id != SERVER_ID_TUNNEL):
+            print("Error receiving response from server: Wrong ID.")
+            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            continue
 
         # Decrypt message
         cipher = AES.new(session_key, AES.MODE_GCM,

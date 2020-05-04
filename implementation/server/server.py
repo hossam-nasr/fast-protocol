@@ -18,6 +18,8 @@ OWN_ID = "S"
 DATA_FILE = "./data.txt"
 PRIVATE_KEY_FILE = "./private_key.pem"
 USER_FILES_DIR = "./user_files"
+USER_ROOT_DIR = None
+wd = None
 INIT_MSG_LEN = 97
 MAC_LEN = 16
 NONCE_LEN = 16
@@ -103,7 +105,6 @@ def get_path(path):
 
 
 def path_allowed(path):
-    global USER_ROOT_DIR
     abs_root_path = os.path.abspath(USER_ROOT_DIR)
     abs_path = os.path.abspath(path)
     return os.path.commonpath([abs_path, abs_root_path]) == abs_root_path
@@ -272,101 +273,107 @@ def get_outputs(command, status, output):
 
 
 # --------------------------------------------- HANDSHAKE PROTOCOL -----------------------------------------------
-# -------------------------------- Setup  -------------------------------
-# Get private key
-priv_key = RSA.importKey(open(PRIVATE_KEY_FILE).read())
-cipher = PKCS1_OAEP.new(priv_key)
 
-# Get user data
-contents = open(DATA_FILE).read()
-user_data = literal_eval(contents)
+def handshake():
+    # -------------------------------- Setup  -------------------------------
+    print("Entering Handshake Protocol...")
 
+    # Get private key
+    priv_key = RSA.importKey(open(PRIVATE_KEY_FILE).read())
+    cipher = PKCS1_OAEP.new(priv_key)
 
-message_valid = False
-session_active = False
-session_key = b''
-while(not message_valid and not session_active):
+    # Get user data
+    contents = open(DATA_FILE).read()
+    user_data = literal_eval(contents)
 
-    # -------------------------------- Wait for Initiation   -------------------------------
-    # wait for initiation message
-    print("Waiting for initiation message...")
-    status, ciphertext = netif.receive_msg(blocking=True)
+    message_valid = False
+    session_active = False
+    session_key = b''
+    while(not message_valid and not session_active):
 
-    # ---------------------------- Validate Initiation  Message -----------------------------
-    print("Received initiation message. Checking...")
-    message_valid = True
+        # -------------------------------- Wait for Initiation   -------------------------------
+        # wait for initiation message
+        print("Waiting for initiation message...")
+        _status, ciphertext = netif.receive_msg(blocking=True)
 
-    # Decrypt message
-    message = cipher.decrypt(ciphertext)
-    if (len(message) != INIT_MSG_LEN):
-        print("Invalid message length. Restarting..")
-        message_valid = False
-        continue
+        # ---------------------------- Validate Initiation  Message -----------------------------
+        print("Received initiation message. Checking...")
+        message_valid = True
 
-    # Deconstruct message
-    index = 0
-    user_id_bytes = message[index:index+1]
-    user_id = user_id_bytes.decode("utf-8")
-    index += 1
+        # Decrypt message
+        message = cipher.decrypt(ciphertext)
+        if (len(message) != INIT_MSG_LEN):
+            print("Invalid message length. Restarting..")
+            message_valid = False
+            continue
 
-    password_bytes_raw = message[index:index + 32]
-    index += 32
-    try:
-        password_bytes = Padding.unpad(password_bytes_raw, 32, 'pkcs7')
-        password = password_bytes.decode("utf-8")
-    except:
-        message_valid = False
-        print("Invalid password padding. Restarting..")
-        continue
+        # Deconstruct message
+        index = 0
+        user_id_bytes = message[index:index+1]
+        user_id = user_id_bytes.decode("utf-8")
+        index += 1
 
-    key = message[index: index + 32]
-    index += 32
+        password_bytes_raw = message[index:index + 32]
+        index += 32
+        try:
+            password_bytes = Padding.unpad(password_bytes_raw, 32, 'pkcs7')
+            password = password_bytes.decode("utf-8")
+        except:
+            message_valid = False
+            print("Invalid password padding. Restarting..")
+            continue
 
-    time_bytes = message[index: index + 32]
-    index += 32
-    timestamp = int.from_bytes(time_bytes, byteorder="big")
+        key = message[index: index + 32]
+        index += 32
 
-    # Validate message
-    if (not user_id in user_data):
-        print("Invalid user ID. Restarting..")
-        message_valid = False
-        continue
-    if (not timestamp_valid(timestamp)):
-        print("Invalid timestamp. Restarting..")
-        message_valid = False
-        continue
-    if (not password_valid(password)):
-        print("Invalid timestamp. Restarting..")
-        message_valid = False
-        continue
+        time_bytes = message[index: index + 32]
+        index += 32
+        timestamp = int.from_bytes(time_bytes, byteorder="big")
 
-    h = SHA224.new()
-    h.update(password_bytes)
-    password_hash = h.digest()
+        # Validate message
+        if (not user_id in user_data):
+            print("Invalid user ID. Restarting..")
+            message_valid = False
+            continue
+        if (not timestamp_valid(timestamp)):
+            print("Invalid timestamp. Restarting..")
+            message_valid = False
+            continue
+        if (not password_valid(password)):
+            print("Invalid timestamp. Restarting..")
+            message_valid = False
+            continue
 
-    if (password_hash != user_data[user_id]["pass_hash"]):
-        message_valid = False
+        h = SHA224.new()
+        h.update(password_bytes)
+        password_hash = h.digest()
 
-    # -------------------------------- Start Session ----------------------------------
-    # Accept key and start new session
-    print("Message accepted. Starting session...")
-    session_active = True
-    session_key = key
+        if (password_hash != user_data[user_id]["pass_hash"]):
+            message_valid = False
 
-    # Construct acknowledgment message
-    ack_msg = user_id_bytes
-    ack_msg += b'session_start'
-    ack_msg += get_millis(time.time()).to_bytes(32, byteorder="big")
+        # -------------------------------- Start Session ----------------------------------
+        # Accept key and start new session
+        print("Message accepted. Starting session...")
+        session_active = True
+        session_key = key
 
-    # Encrypt acknowledgment message with session key
-    nonce = 1
-    nonce_bytes = nonce.to_bytes(16, byteorder="big")
-    cipher = AES.new(session_key, AES.MODE_GCM,
-                     nonce=nonce_bytes, mac_len=MAC_LEN)
-    ciphertext, tag = cipher.encrypt_and_digest(ack_msg)
+        # Construct acknowledgment message
+        ack_msg = user_id_bytes
+        ack_msg += b'session_start'
+        ack_msg += get_millis(time.time()).to_bytes(32, byteorder="big")
 
-    # send acknowledgement message
-    netif.send_msg(user_id, ciphertext + tag)
+        # Encrypt acknowledgment message with session key
+        nonce = 1
+        nonce_bytes = nonce.to_bytes(16, byteorder="big")
+        cipher = AES.new(session_key, AES.MODE_GCM,
+                         nonce=nonce_bytes, mac_len=MAC_LEN)
+        ciphertext, tag = cipher.encrypt_and_digest(ack_msg)
+
+        # send acknowledgement message
+        netif.send_msg(user_id, ciphertext + tag)
+
+    print("Exiting Handshake protocol...")
+    tunnel(user_id, session_key)
 
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
@@ -374,169 +381,184 @@ while(not message_valid and not session_active):
 
 # -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------
 
-# -------------------------------- Setup  -------------------------------
-# Get Directories
-USER_ROOT_DIR = os.path.abspath(USER_FILES_DIR + "/" + user_id)
+def tunnel(user_id, session_key):
+    # -------------------------------- Setup  -------------------------------
+    print("Entering Tunnel protocol...")
 
-# Create directories if they don't exist
-if not (os.path.exists(USER_FILES_DIR)):
-    print("Creating folder " + USER_FILES_DIR + " ...")
-    os.mkdir(USER_FILES_DIR)
-if not (os.path.exists(USER_ROOT_DIR)):
-    print("Creating folder " + USER_ROOT_DIR + " ...")
-    os.mkdir(USER_ROOT_DIR)
+    global USER_ROOT_DIR
+    global wd
 
-# Ensure access
-if not os.access(USER_FILES_DIR, os.F_OK):
-    print('Error: Cannot access path ' + USER_FILES_DIR)
-    sys.exit(1)
+    # Get Directories
+    USER_ROOT_DIR = os.path.abspath(USER_FILES_DIR + "/" + user_id)
 
-# Working Directory
-wd = USER_ROOT_DIR
+    # Ensure access
+    if not os.access(USER_FILES_DIR, os.F_OK):
+        print('Error: Cannot access path ' + USER_FILES_DIR)
+        sys.exit(1)
 
+    # Create directories if they don't exist
+    if not (os.path.exists(USER_FILES_DIR)):
+        print("Creating folder " + USER_FILES_DIR + " ...")
+        os.mkdir(USER_FILES_DIR)
+    if not (os.path.exists(USER_ROOT_DIR)):
+        print("Creating folder " + USER_ROOT_DIR + " ...")
+        os.mkdir(USER_ROOT_DIR)
 
-# start accepting messages
-print("Accepting messages...")
-send_sqn = 1
-receive_sqn = 0
-while (session_active):
-    # ------------------------- Wait for command message  ----------------------------
-    status, msg = netif.receive_msg(blocking=True)
-    print("Command message received.")
+    # Working Directory
+    wd = USER_ROOT_DIR
 
-    # ------------------------- Validate command message  ----------------------------
-    print("Validating message...")
-    header_len = 22
-    if (len(msg) < header_len + MAC_LEN):
-        print("Message length too short. Discarding message...")
-        continue
+    # start accepting messages
+    print("Accepting messages...")
+    send_sqn = 1
+    receive_sqn = 0
+    session_active = True
+    while (session_active):
+        # ------------------------- Wait for command message  ----------------------------
+        status, msg = netif.receive_msg(blocking=True)
+        print("Command message received.")
 
-    # Deconstruct message
-    header = msg[0:header_len]
-    encrypted_payload = msg[header_len:-MAC_LEN]
-    auth_tag = msg[-MAC_LEN:]
-    index = 0
-    version = header[0:2]
-    index += 2
-    msg_len = int.from_bytes(header[index:index+4], byteorder="big")
-    index += 4
-    nonce = header[index:index+NONCE_LEN]
-    new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+        # ------------------------- Validate command message  ----------------------------
+        print("Validating message...")
+        header_len = 22
+        if (len(msg) < header_len + MAC_LEN):
+            print("Message length too short. Discarding message...")
+            continue
 
-    # Validate message
-    if (version != b'\x01\x00'):
-        print("Unsupported protocol version. Restarting...")
-        continue
-    if (new_sqn <= receive_sqn):
-        print("Sequence number too small. Restarting...")
-        continue
-    else:
-        receive_sqn = new_sqn
-
-    # Decrypt message
-    cipher = AES.new(session_key, AES.MODE_GCM, nonce=nonce, mac_len=MAC_LEN)
-    cipher.update(header)
-    try:
-        payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-    except Exception as e:
-        print(e)
-        print("Decryption failed. Restarting... ")
-        continue
-
-    if (len(payload) + header_len + MAC_LEN != msg_len):
-        print("Message length incorrect. Restarting...")
-        continue
-
-    print("Message valdidation successful...")
-
-    # ------------------------------ Parse command message  ---------------------------------
-
-    print("Parsing message...")
-
-    # Destructure payload
-    try:
+        # Deconstruct message
+        header = msg[0:header_len]
+        encrypted_payload = msg[header_len:-MAC_LEN]
+        auth_tag = msg[-MAC_LEN:]
         index = 0
-        arg_num = int.from_bytes(payload[index:index+1], byteorder="big")
-        index += 1
-        command = payload[index:index+3].decode("utf-8")
-        index += 3
-        args_raw = payload[index:]
-        args = []
-        index = 0
-        for i in range(arg_num-1):
-            arg_len = int.from_bytes(args_raw[index:index+8], byteorder="big")
-            index += 8
-            arg = args_raw[index:index+arg_len]
-            index += arg_len
-            args.append(arg)
+        version = header[0:2]
+        index += 2
+        msg_len = int.from_bytes(header[index:index+4], byteorder="big")
+        index += 4
+        nonce = header[index:index+NONCE_LEN]
+        new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
 
-    except Exception as e:
-        print(e)
-        print("Command parsing failed. Invalid command or argument length")
-        # TODO: SEND A FAILURE MESSAGE HERE
-        continue
+        # Validate message
+        if (version != b'\x01\x00'):
+            print("Unsupported protocol version. Restarting...")
+            continue
+        if (new_sqn <= receive_sqn):
+            print("Sequence number too small. Restarting...")
+            continue
+        else:
+            receive_sqn = new_sqn
 
-    # Validate command message
-    if (command not in COMMANDS):
-        print("Invalid command {}. Restarting...".format(command))
-        # TODO: SEND A FAILURE MESSAGE HERE
-        continue
-    if (arg_num < 1 or arg_num != COMMANDS[command]["arg_num"] + 1 or len(args_raw) != index):
-        print("Invalid argument number. Restarting...")
-        # TODO: SEND A FAILURE MESSAGE HERE
-        continue
+        # Decrypt message
+        cipher = AES.new(session_key, AES.MODE_GCM,
+                         nonce=nonce, mac_len=MAC_LEN)
+        cipher.update(header)
+        try:
+            payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
+        except Exception as e:
+            print(e)
+            print("Decryption failed. Restarting... ")
+            continue
 
-    print("Received command: ", command)
-    print("Received arguments: ", args)
+        if (len(payload) + header_len + MAC_LEN != msg_len):
+            print("Message length incorrect. Restarting...")
+            continue
 
-    # -------------------------------- Execute commands  -----------------------------------
-    print("Executing command...")
-    if (command == 'END'):
-        print("Ending session...")
-        session_active = False
-        status = True
-        output = None
-    else:
-        status, output = execute_command(command, args)
+        print("Message valdidation successful...")
 
-    print("Command executed.")
-    outputs = get_outputs(command, status, output)
+        # ------------------------------ Parse command message  ---------------------------------
 
-    # ------------------------- Construct acknowledgment message  --------------------------------
-    print("Sending acknowledgment message...")
-    # Add 1 extra arguments to account for "acknowledged"
-    arg_num = len(outputs) + 1
+        print("Parsing message...")
 
-    # construct payload
-    payload = b""
-    payload += arg_num.to_bytes(1, byteorder="big")
-    payload += b"acknowledged"
-    for output in outputs:
-        if (not type(output) == type(b"")):
-            output = output.encode("utf-8")
-        len_bytes = len(output).to_bytes(8, byteorder="big")
-        payload += len_bytes + output
+        # Destructure payload
+        try:
+            index = 0
+            arg_num = int.from_bytes(payload[index:index+1], byteorder="big")
+            index += 1
+            command = payload[index:index+3].decode("utf-8")
+            index += 3
+            args_raw = payload[index:]
+            args = []
+            index = 0
+            for _i in range(arg_num-1):
+                arg_len = int.from_bytes(
+                    args_raw[index:index+8], byteorder="big")
+                index += 8
+                arg = args_raw[index:index+arg_len]
+                index += arg_len
+                args.append(arg)
 
-    # construct header
-    version_bytes = b'\x01\x00'  # version 1.0
-    send_sqn += 1
-    rnd = Random.get_random_bytes(8)
-    nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-    # Header length is 22 bytes (2 version number + 4 length + 16 nonce)
-    msg_len = 22 + len(payload) + MAC_LEN
-    msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
-    header = version_bytes + msg_len_bytes + nonce
+        except Exception as e:
+            print(e)
+            print("Command parsing failed. Invalid command or argument length")
+            # TODO: SEND A FAILURE MESSAGE HERE
+            continue
 
-    # encrypt message
-    cipher = AES.new(session_key, AES.MODE_GCM,
-                     nonce=nonce, mac_len=MAC_LEN)
-    cipher.update(header)
-    encrypted_payload, auth_tag = cipher.encrypt_and_digest(
-        payload)
+        # Validate command message
+        if (command not in COMMANDS):
+            print("Invalid command {}. Restarting...".format(command))
+            # TODO: SEND A FAILURE MESSAGE HERE
+            continue
+        if (arg_num < 1 or arg_num != COMMANDS[command]["arg_num"] + 1 or len(args_raw) != index):
+            print("Invalid argument number. Restarting...")
+            # TODO: SEND A FAILURE MESSAGE HERE
+            continue
 
-    # ---------------------------- Send acknowledgment message  --------------------------------------
-    netif.send_msg(user_id, header + encrypted_payload + auth_tag)
-    print("Acknowledgment message sent.")
+        print("Received command: ", command)
+        print("Received arguments: ", args)
 
-if (not session_active):
-    session_key = b""
+        # -------------------------------- Execute commands  -----------------------------------
+        print("Executing command...")
+        if (command == 'END'):
+            print("Ending session...")
+            session_active = False
+            status = True
+            output = None
+        else:
+            status, output = execute_command(command, args)
+
+        print("Command executed.")
+        outputs = get_outputs(command, status, output)
+
+        # ------------------------- Construct acknowledgment message  --------------------------------
+        print("Sending acknowledgment message...")
+        # Add 1 extra arguments to account for "acknowledged"
+        arg_num = len(outputs) + 1
+
+        # construct payload
+        payload = b""
+        payload += arg_num.to_bytes(1, byteorder="big")
+        payload += b"acknowledged"
+        for output in outputs:
+            if (not type(output) == type(b"")):
+                output = output.encode("utf-8")
+            len_bytes = len(output).to_bytes(8, byteorder="big")
+            payload += len_bytes + output
+
+        # construct header
+        version_bytes = b'\x01\x00'  # version 1.0
+        send_sqn += 1
+        rnd = Random.get_random_bytes(8)
+        nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
+        # Header length is 22 bytes (2 version number + 4 length + 16 nonce)
+        msg_len = 22 + len(payload) + MAC_LEN
+        msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
+        header = version_bytes + msg_len_bytes + nonce
+
+        # encrypt message
+        cipher = AES.new(session_key, AES.MODE_GCM,
+                         nonce=nonce, mac_len=MAC_LEN)
+        cipher.update(header)
+        encrypted_payload, auth_tag = cipher.encrypt_and_digest(
+            payload)
+
+        # ---------------------------- Send acknowledgment message  --------------------------------------
+        netif.send_msg(user_id, header + encrypted_payload + auth_tag)
+        print("Acknowledgment message sent.")
+
+    if (not session_active):
+        session_key = b""
+
+    print("Exiting Tunnel Protocol...")
+    handshake()
+
+
+print("Starting up the FAST Server...")
+handshake()

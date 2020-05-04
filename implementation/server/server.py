@@ -14,7 +14,8 @@ import sys
 # ------------------------------------------------- CONSTANTS ----------------------------------------------------
 
 NET_ADDR = "../network/"
-OWN_ID = "S"
+OWN_ID_HANDSHAKE = "H"
+OWN_ID_TUNNEL = "T"
 DATA_FILE = "./data.txt"
 PRIVATE_KEY_FILE = "./private_key.pem"
 USER_FILES_DIR = "./user_files"
@@ -23,9 +24,6 @@ wd = None
 INIT_MSG_LEN = 97
 MAC_LEN = 16
 NONCE_LEN = 16
-
-# create network interface netif
-netif = network_interface(NET_ADDR, OWN_ID)
 
 
 COMMANDS = {
@@ -278,6 +276,9 @@ def handshake():
     # -------------------------------- Setup  -------------------------------
     print("Entering Handshake Protocol...")
 
+    # create network interface netif
+    netif = network_interface(NET_ADDR, OWN_ID_HANDSHAKE)
+
     # Get private key
     priv_key = RSA.importKey(open(PRIVATE_KEY_FILE).read())
     cipher = PKCS1_OAEP.new(priv_key)
@@ -289,7 +290,7 @@ def handshake():
     message_valid = False
     session_active = False
     session_key = b''
-    while(not message_valid and not session_active):
+    while(not message_valid or not session_active):
 
         # -------------------------------- Wait for Initiation   -------------------------------
         # wait for initiation message
@@ -301,6 +302,7 @@ def handshake():
         message_valid = True
 
         # Decrypt message
+        cipher = PKCS1_OAEP.new(priv_key)
         message = cipher.decrypt(ciphertext)
         if (len(message) != INIT_MSG_LEN):
             print("Invalid message length. Restarting..")
@@ -372,6 +374,17 @@ def handshake():
         # send acknowledgement message
         netif.send_msg(user_id, ciphertext + tag)
 
+        # fork a child to handle the Tunnel Protocol
+        newpid = os.fork()
+        if (newpid == 0):
+            # Child process handles Tunnel protocol
+            print("Exiting Handshake protocol...")
+            tunnel(user_id, session_key)
+        else:
+            # Parent process continues to accept messages
+            session_active = False
+            message_valid = False
+            session_key = b""
     print("Exiting Handshake protocol...")
     tunnel(user_id, session_key)
 
@@ -384,6 +397,9 @@ def handshake():
 def tunnel(user_id, session_key):
     # -------------------------------- Setup  -------------------------------
     print("Entering Tunnel protocol...")
+
+    # create network interface netif
+    netif = network_interface(NET_ADDR, OWN_ID_TUNNEL)
 
     global USER_ROOT_DIR
     global wd
@@ -454,6 +470,7 @@ def tunnel(user_id, session_key):
             payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
         except Exception as e:
             print(e)
+            print("Header: ", header)
             print("Decryption failed. Restarting... ")
             continue
 
@@ -553,11 +570,9 @@ def tunnel(user_id, session_key):
         netif.send_msg(user_id, header + encrypted_payload + auth_tag)
         print("Acknowledgment message sent.")
 
-    if (not session_active):
-        session_key = b""
-
+    # Exit this process
     print("Exiting Tunnel Protocol...")
-    handshake()
+    sys.exit(0)
 
 
 print("Starting up the FAST Server...")

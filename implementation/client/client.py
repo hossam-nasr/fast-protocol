@@ -11,7 +11,8 @@ import sys
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
 
 NET_ADDR = "../network/"
-SERVER_ID = 'S'
+SERVER_ID_TUNNEL = 'T'
+SERVER_ID_HANDSHAKE = 'H'
 SERVER_INFO_FILE = "./server_pub_key.txt"
 MAX_TRIALS = 3
 MAC_LEN = 16
@@ -108,7 +109,7 @@ def handshake():
             ciphertext = public_cipher.encrypt(initiation_msg)
 
             # send initiation message
-            netif.send_msg(SERVER_ID, ciphertext)
+            netif.send_msg(SERVER_ID_HANDSHAKE, ciphertext)
 
             # ---------------------------- Wait for server response  ---------------------------
             print("Waiting for server response...")
@@ -242,7 +243,7 @@ def tunnel(user_id, session_key):
             payload)
 
         # ---------------------------- Send command message  -------------------------------
-        netif.send_msg(SERVER_ID, header + encrypted_payload + auth_tag)
+        netif.send_msg(SERVER_ID_TUNNEL, header + encrypted_payload + auth_tag)
 
         # if the command was END, end the session, regardless of server response
         if (command == "END"):
@@ -273,6 +274,7 @@ def tunnel(user_id, session_key):
 
         # Validate message
         if (version != b'\x01\x00'):
+            print("Received version: ", version)
             print("Error receiving response from server: Unsupported protocol version.")
             print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
             continue

@@ -46,7 +46,7 @@ COMMANDS = {
         "output_nums": [1, 2]
     },
     "END": {
-        "output_nums": [0]
+        "output_nums": [0, 2]
     }
 }
 
@@ -119,19 +119,18 @@ def handshake():
             # ---------------------------- Validate server response  ---------------------------
             print("Checking server response...")
 
-            if (len(ack_msg) < MAC_LEN):
+            if (len(ack_msg) < MAC_LEN + NONCE_LEN):
                 response_valid = False
                 continue
 
-            encrypted_payload = ack_msg[:-MAC_LEN]
+            nonce = ack_msg[:NONCE_LEN]
+            encrypted_payload = ack_msg[NONCE_LEN:-MAC_LEN]
             auth_tag = ack_msg[-MAC_LEN:]
 
             # Authenticate message
-            nonce = 1
-            nonce_bytes = nonce.to_bytes(16, byteorder="big")
             cipher = AES.new(session_key, AES.MODE_GCM,
-                             nonce=nonce_bytes, mac_len=MAC_LEN)
-
+                             nonce=nonce, mac_len=MAC_LEN)
+            cipher.update(nonce)
             try:
                 payload = cipher.decrypt_and_verify(
                     encrypted_payload, auth_tag)
@@ -161,15 +160,19 @@ def handshake():
             timestamp = int.from_bytes(time_bytes, byteorder="big")
             index += 32
 
-            # TODO: check here that there isn't more to the message
-
             # Validate message
+            received_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+            expected_sqn = 1
+            if (received_sqn != expected_sqn):
+                response_valid = False
+                trials += 1
+                print("Bad response. Trying again...")
+                continue
             if (response_id != user_id):
                 response_valid = False
                 trials += 1
                 print("Bad response. Trying again...")
                 continue
-
             if (ack != "session_start"):
                 response_valid = False
                 trials += 1

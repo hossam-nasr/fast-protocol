@@ -23,6 +23,7 @@ USER_ROOT_DIR = None
 wd = None
 INIT_MSG_LEN = 97
 MAC_LEN = 16
+HEADER_LEN = 23
 NONCE_LEN = 16
 
 
@@ -78,7 +79,40 @@ def password_valid(password):
             and re.search("(?=.*[!@#$%^&*])", password))
 
 
-# ---------------------------------------------- FILE HANDLING FUNCTIONS ------------------------------------------------
+def get_tunnel_error_message(session_key, send_sqn, error):
+    # 3 arguments: "acknowledged", "failure", error message
+    arg_num = 3
+
+    # construct payload
+    payload = b""
+    payload += arg_num.to_bytes(1, byteorder="big")
+    payload += b"acknowledged"
+    arg_1_len = len("failure")
+    payload += arg_1_len.to_bytes(8, byteorder="big")
+    payload += b"failure"
+    arg_2_len = len(error)
+    payload += arg_2_len.to_bytes(8, byteorder="big")
+    payload += error.encode("utf-8")
+
+    # construct header
+    version_bytes = b'\x01\x00'  # version 1.0
+    rnd = Random.get_random_bytes(8)
+    nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
+    # Header length is 23 bytes (2 version number + 4 length + 1 ID +  16 nonce)
+    msg_len = HEADER_LEN + len(payload) + MAC_LEN
+    msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
+    own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
+    header = version_bytes + msg_len_bytes + own_id_bytes + nonce
+
+    # encrypt message
+    cipher = AES.new(session_key, AES.MODE_GCM,
+                     nonce=nonce, mac_len=MAC_LEN)
+    cipher.update(header)
+    encrypted_payload, auth_tag = cipher.encrypt_and_digest(payload)
+    return header + encrypted_payload + auth_tag
+
+    # ---------------------------------------------- FILE HANDLING FUNCTIONS ------------------------------------------------
+
 
 def get_user_rel_path(path):
     global USER_ROOT_DIR
@@ -383,14 +417,16 @@ def handshake():
         ack_msg += get_millis(time.time()).to_bytes(32, byteorder="big")
 
         # Encrypt acknowledgment message with session key
-        nonce = 1
-        nonce_bytes = nonce.to_bytes(16, byteorder="big")
+        sqn = 1
+        rnd = Random.get_random_bytes(8)
+        nonce = sqn.to_bytes(8, byteorder="big") + rnd
         cipher = AES.new(session_key, AES.MODE_GCM,
-                         nonce=nonce_bytes, mac_len=MAC_LEN)
+                         nonce=nonce, mac_len=MAC_LEN)
+        cipher.update(nonce)
         ciphertext, tag = cipher.encrypt_and_digest(ack_msg)
 
         # send acknowledgement message
-        netif.send_msg(user_id, ciphertext + tag)
+        netif.send_msg(user_id, nonce + ciphertext + tag)
 
     # Return established session credentials
     print("Exiting Handshake protocol...")
@@ -409,11 +445,11 @@ def tunnel(user_id, session_key):
     # create network interface netif
     netif = network_interface(NET_ADDR, OWN_ID_TUNNEL)
 
+    # Get Directories
     global USER_ROOT_DIR
     global wd
-
-    # Get Directories
     USER_ROOT_DIR = os.path.abspath(USER_FILES_DIR + "/" + user_id)
+    wd = USER_ROOT_DIR
 
     # Ensure access
     if not os.access(USER_FILES_DIR, os.F_OK):
@@ -428,9 +464,6 @@ def tunnel(user_id, session_key):
         print("Creating folder " + USER_ROOT_DIR + " ...")
         os.mkdir(USER_ROOT_DIR)
 
-    # Working Directory
-    wd = USER_ROOT_DIR
-
     # start accepting messages
     print("Accepting messages...")
     send_sqn = 1
@@ -443,14 +476,13 @@ def tunnel(user_id, session_key):
 
         # ------------------------- Validate command message  ----------------------------
         print("Validating message...")
-        header_len = 23
-        if (len(msg) < header_len + MAC_LEN):
+        if (len(msg) < HEADER_LEN + MAC_LEN):
             print("Message length too short. Discarding message...")
             continue
 
         # Deconstruct message
-        header = msg[0:header_len]
-        encrypted_payload = msg[header_len:-MAC_LEN]
+        header = msg[0:HEADER_LEN]
+        encrypted_payload = msg[HEADER_LEN:-MAC_LEN]
         auth_tag = msg[-MAC_LEN:]
         index = 0
         version = header[0:2]
@@ -462,7 +494,7 @@ def tunnel(user_id, session_key):
         nonce = header[index:index+NONCE_LEN]
         new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
 
-        # Only look at message from the current user
+        # Only look at messages from the current user
         if (resp_id != user_id):
             continue
 
@@ -482,17 +514,15 @@ def tunnel(user_id, session_key):
         cipher.update(header)
         try:
             payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-        except Exception as e:
-            print(e)
-            print("Header: ", header)
+        except Exception:
             print("Decryption failed. Restarting... ")
             continue
 
-        if (len(payload) + header_len + MAC_LEN != msg_len):
+        if (len(payload) + HEADER_LEN + MAC_LEN != msg_len):
             print("Message length incorrect. Restarting...")
             continue
 
-        print("Message valdidation successful...")
+        print("Message valdidation successful.")
 
         # ------------------------------ Parse command message  ---------------------------------
 
@@ -516,20 +546,28 @@ def tunnel(user_id, session_key):
                 index += arg_len
                 args.append(arg)
 
-        except Exception as e:
-            print(e)
-            print("Command parsing failed. Invalid command or argument length")
-            # TODO: SEND A FAILURE MESSAGE HERE
+        except Exception:
+            error = "Command parsing failed. Invalid command or argument length"
+            print(error)
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
             continue
 
         # Validate command message
         if (command not in COMMANDS):
-            print("Invalid command {}. Restarting...".format(command))
-            # TODO: SEND A FAILURE MESSAGE HERE
+            error = "Invalid command {}.".format(command)
+            print(error + " Restarting...")
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
             continue
         if (arg_num < 1 or arg_num != COMMANDS[command]["arg_num"] + 1 or len(args_raw) != index):
-            print("Invalid argument number. Restarting...")
-            # TODO: SEND A FAILURE MESSAGE HERE
+            error = "Invalid argument number."
+            print(error + " Restarting...")
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
             continue
 
         print("Received command: ", command)
@@ -569,7 +607,7 @@ def tunnel(user_id, session_key):
         rnd = Random.get_random_bytes(8)
         nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
         # Header length is 23 bytes (2 version number + 4 length + 1 ID +  16 nonce)
-        msg_len = 23 + len(payload) + MAC_LEN
+        msg_len = HEADER_LEN + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
         own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
         header = version_bytes + msg_len_bytes + own_id_bytes + nonce
@@ -578,8 +616,7 @@ def tunnel(user_id, session_key):
         cipher = AES.new(session_key, AES.MODE_GCM,
                          nonce=nonce, mac_len=MAC_LEN)
         cipher.update(header)
-        encrypted_payload, auth_tag = cipher.encrypt_and_digest(
-            payload)
+        encrypted_payload, auth_tag = cipher.encrypt_and_digest(payload)
 
         # ---------------------------- Send acknowledgment message  --------------------------------------
         netif.send_msg(user_id, header + encrypted_payload + auth_tag)

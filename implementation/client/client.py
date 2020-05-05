@@ -190,18 +190,8 @@ def handshake():
         if (not session_active):
             print(
                 "After {} trials, no valid server response. Try again!".format(MAX_TRIALS))
-        else:
-            # Start a new thread to handle the tunnel protocol
-            threading.excepthook = lambda: sys.exit(1)
-            tunnel_thread = threading.Thread(
-                target=tunnel, args=(user_id, session_key))
-            tunnel_thread.start()
-            # Wait for thread to finish
-            tunnel_thread.join()
 
-            # Prepare to accept a new session
-            session_active = False
-            session_key = b""
+    return user_id, session_key
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
 
@@ -368,12 +358,21 @@ def tunnel(user_id, session_key):
         else:
             for output in outputs:
                 print(output)
+# --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
 
-    # Exit this thread and hand back to Handshake!
-    print("Please login to start using FAST!")
 
+# --------------------------------------------------- MAIN CLIENT -------------------------------------------------------
 
 # Intiate client
 print("Welcome to the FAST Protocol client!")
-print("Please login to start using FAST!")
-handshake()
+while (True):
+    print("Please login to start using FAST!")
+
+    # Use Handshake protocol to establish session
+    user_id, session_key = handshake()
+
+    # Use established session protocol to communicate over Tunnel
+    tunnel(user_id, session_key)
+
+    # Clear memory of session key
+    session_key = b""

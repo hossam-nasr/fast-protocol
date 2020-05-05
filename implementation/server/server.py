@@ -351,7 +351,9 @@ def handshake():
         password_hash = h.digest()
 
         if (password_hash != user_data[user_id]["pass_hash"]):
+            print("Invalid password. Restarting..")
             message_valid = False
+            continue
 
         # -------------------------------- Start Session ----------------------------------
         # Accept key and start new session
@@ -374,19 +376,9 @@ def handshake():
         # send acknowledgement message
         netif.send_msg(user_id, ciphertext + tag)
 
-        # fork a child to handle the Tunnel Protocol
-        newpid = os.fork()
-        if (newpid == 0):
-            # Child process handles Tunnel protocol
-            print("Exiting Handshake protocol...")
-            tunnel(user_id, session_key)
-        else:
-            # Parent process continues to accept messages
-            session_active = False
-            message_valid = False
-            session_key = b""
+    # Return established session credentials
     print("Exiting Handshake protocol...")
-    tunnel(user_id, session_key)
+    return user_id, session_key
 
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
@@ -577,10 +569,28 @@ def tunnel(user_id, session_key):
         netif.send_msg(user_id, header + encrypted_payload + auth_tag)
         print("Acknowledgment message sent.")
 
-    # Exit this process
+    # End of Tunnel protocol
     print("Exiting Tunnel Protocol...")
-    sys.exit(0)
+
+# ---------------------------------------------- END OF TUNNEL PROTOCOL ------------------------------------------------
 
 
+# --------------------------------------------------- MAIN SERVER --------------------------------------------------------
+
+# Start up server
 print("Starting up the FAST Server...")
-handshake()
+while True:
+
+    # Establish new session using Handshake
+    user_id, session_key = handshake()
+
+    # Fork a new process to handle the session
+    newpid = os.fork()
+    if (newpid == 0):
+        # Child process handles Tunnel protocol
+        tunnel(user_id, session_key)
+        # Exit successfully upon completion
+        sys.exit(0)
+    else:
+        # Parent process continues to accept messages and forgets the session key
+        session_key = b""

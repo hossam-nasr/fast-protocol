@@ -86,7 +86,7 @@ def is_ascii(s):
 
 
 def dir_name_valid(name):
-    len(name) > 0 and len(name) <= 120 and is_ascii(name)
+    return len(name) > 0 and len(name) <= 120 and is_ascii(name)
 
 
 def get_tunnel_error_message(session_key, send_sqn, error):
@@ -153,7 +153,7 @@ def path_allowed(path):
 
 def mkd(dir_name):
     path = get_path(dir_name)
-    if (os.path.exists(path)):
+    if (os.path.exists(path) and os.path.isdir(path)):
         return False, "A folder with the name {} already exists".format(dir_name)
     if (not path_allowed(path)):
         return False, "Access Denied"

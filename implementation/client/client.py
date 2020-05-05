@@ -9,7 +9,8 @@ import sys
 import threading
 import shlex
 import readline
-
+from termcolor import colored, cprint
+from colorama import Fore, Style
 
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
 
@@ -81,7 +82,8 @@ def handshake():
     while (not session_active):
 
         # Get user ID
-        user_id = input("Please enter your ID: ").rstrip().lstrip().upper()
+        user_id = input(Fore.CYAN + Style.BRIGHT + "Please enter your ID: " +
+                        Style.RESET_ALL).rstrip().lstrip().upper()
         if (len(user_id) > 1):
             user_id = user_id[0]
 
@@ -89,12 +91,13 @@ def handshake():
         netif = network_interface(NET_ADDR, user_id)
 
         # Get password
-        password = getpass("Please enter your password: ").rstrip().lstrip()
+        password = getpass(Fore.CYAN + Style.BRIGHT +
+                           "Please enter your password: " + Style.RESET_ALL).rstrip().lstrip()
 
         response_valid = False
         trials = 0
         while ((not session_active or not response_valid) and trials < MAX_TRIALS):
-            print("Starting a new session...")
+            cprint("Starting a new session...", "cyan", attrs=[])
             response_valid = True
 
             # -------------------------------- Initiate protocol  -------------------------------
@@ -118,11 +121,11 @@ def handshake():
             netif.send_msg(SERVER_ID_HANDSHAKE, ciphertext)
 
             # ---------------------------- Wait for server response  ---------------------------
-            print("Waiting for server response...")
+            cprint("Waiting for server response...", "cyan", attrs=[])
             _status, ack_msg = netif.receive_msg(blocking=True)
 
             # ---------------------------- Validate server response  ---------------------------
-            print("Checking server response...")
+            cprint("Checking server response...", "cyan", attrs=[])
 
             if (len(ack_msg) < MAC_LEN + NONCE_LEN):
                 response_valid = False
@@ -142,13 +145,13 @@ def handshake():
             except Exception:
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again... ")
+                cprint("Bad response. Trying again... ", "yellow", attrs=[])
                 continue
 
             if (len(payload) != ACK_MSG_LEN):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again... ")
+                cprint("Bad response. Trying again... ", "yellow", attrs=[])
                 continue
 
             # Deconstruct message
@@ -171,28 +174,28 @@ def handshake():
             if (received_sqn != expected_sqn):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
             if (response_id != user_id):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
             if (ack != "session_start"):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
 
             if (not timestamp_valid(timestamp)):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
 
             # -------------------------------- Start session  -------------------------------
             if (response_valid):
-                print("Successfully logged in...")
+                cprint("Successfully logged in!", "green", attrs=[])
                 session_active = True
 
         if (not session_active):
@@ -207,7 +210,7 @@ def handshake():
 # -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------
 def tunnel(user_id, session_key):
     # -------------------------------- Setup  ----------------------------------
-    print("Start typing commands!")
+    cprint("Start typing commands!", "green", attrs=[])
     send_sqn = 0
     receive_sqn = 1
     wd = "/"
@@ -215,13 +218,15 @@ def tunnel(user_id, session_key):
     netif = network_interface(NET_ADDR, user_id)
     while (session_active):
         # Get command and args
-        raw_command = input("~" + wd + "$ ").rstrip().lstrip()
+        print(Fore.MAGENTA + Style.BRIGHT + Style.DIM, end="")
+        raw_command = input(
+            "~" + wd + "$ " + Style.RESET_ALL).rstrip().lstrip()
         commands = shlex.split(raw_command)
         command = commands[0].upper()
         args = commands[1:]
 
         if (command not in COMMANDS):
-            print("Unknown command {}".format(command))
+            cprint("Unknown command {}".format(command), "red", attrs=["bold"])
             continue
 
         # ------------------------- Construct command message  ----------------------------
@@ -257,7 +262,7 @@ def tunnel(user_id, session_key):
 
         # if the command was END, end the session, regardless of server response
         if (command == "END"):
-            print("Logging out...")
+            cprint("Logging out...", "cyan", attrs=[])
             session_active = False
 
         # -------------------- Wait for server acknowledgment message  ----------------------
@@ -265,8 +270,10 @@ def tunnel(user_id, session_key):
 
         # ----------------------- Validate acknowledgement message  ----------------------------
         if (len(msg) < HEADER_LEN + MAC_LEN):
-            print("Error receiving response from server: Message length too short.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Message length too short.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # Deconstruct message
@@ -285,19 +292,24 @@ def tunnel(user_id, session_key):
 
         # Validate message
         if (version != b'\x01\x00'):
-            print("Received version: ", version)
-            print("Error receiving response from server: Unsupported protocol version.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Unsupported protocol version.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
         if (new_sqn <= receive_sqn):
-            print("Error receiving response from server: Sequence number too small.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Sequence number too small.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
         else:
             receive_sqn = new_sqn
         if (resp_id != SERVER_ID_TUNNEL):
-            print("Error receiving response from server: Wrong ID.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Wrong ID.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # Decrypt message
@@ -306,15 +318,18 @@ def tunnel(user_id, session_key):
         cipher.update(header)
         try:
             payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-        except Exception as e:
-            print(
-                "Error receiving response from server: Authentication failed with error: ", e)
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        except Exception:
+            cprint("Error receiving response from server: Authentication failed.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         if (len(payload) + HEADER_LEN + MAC_LEN != msg_len):
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # ------------------------------ Parse command message  ---------------------------------
@@ -337,19 +352,25 @@ def tunnel(user_id, session_key):
                 index += output_len
                 outputs.append(output.decode("utf-8"))
 
-        except Exception as e:
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        except Exception:
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # Validate command message
         if (ack != "acknowledged"):
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
         if (arg_num < 1 or (arg_num - 1 not in COMMANDS[command]["output_nums"] and "*" not in COMMANDS[command]["output_nums"]) or len(outputs_raw) != index):
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # -------------------------------- Display output  -----------------------------------
@@ -357,19 +378,27 @@ def tunnel(user_id, session_key):
         if (command == "END"):
             session_active = False
             session_key = b""
-            print("Logged out.")
+            cprint("Logged out.", "green", attrs=["bold"])
 
         # if command was CWD, display output in the shell
         if (command == "CWD" and len(outputs) == 1):
             wd = outputs[0]
         else:
             # print outputs
+            print(Fore.CYAN + Style.BRIGHT, end="")
             for output in outputs:
-                print(output)
+                if (output == "success"):
+                    print(Fore.GREEN + "Success!")
+                elif (output == "failure"):
+                    print(Fore.RED + "Failure: ", end="")
+                else:
+                    print(output)
+            print(Style.RESET_ALL, end="")
 
         # Exit session if reached maximum number of messages
         if (send_sqn == 2 ** SQN_LEN - 1):
-            print("Reached maximum number of messages in one session. Logging out...")
+            cprint(
+                "Reached maximum number of messages in one session. Logging out...", "yellow", attrs=["bold"])
             session_active = False
             session_key = b""
 
@@ -380,9 +409,9 @@ def tunnel(user_id, session_key):
 # --------------------------------------------------- MAIN CLIENT -------------------------------------------------------
 
 # Intiate client
-print("Welcome to the FAST Protocol client!")
+cprint("Welcome to the FAST Protocol client!", "yellow", attrs=["bold"])
 while (True):
-    print("Please login to start using FAST!")
+    cprint("Please login to start using FAST!", "yellow", attrs=["bold"])
 
     # Use Handshake protocol to establish session
     user_id, session_key = handshake()

@@ -16,7 +16,7 @@ import sys
 NET_ADDR = "../network/"
 OWN_ID_HANDSHAKE = "H"
 OWN_ID_TUNNEL = "T"
-DATA_FILE = "./data.txt"
+DATA_FILE = "./user_data.txt"
 PRIVATE_KEY_FILE = "./private_key.pem"
 USER_FILES_DIR = "./user_files"
 USER_ROOT_DIR = None
@@ -24,6 +24,8 @@ wd = None
 INIT_MSG_LEN = 97
 MAC_LEN = 16
 NONCE_LEN = 16
+SQN_LEN = 10
+HEADER_LEN = 7 + NONCE_LEN
 
 
 COMMANDS = {
@@ -72,13 +74,54 @@ def timestamp_valid(millis):
 
 
 def password_valid(password):
-    return (len(password) >= 8 and len(password) <= 32
+    return (is_ascii(password) and
+            len(password) >= 8 and len(password) <= 32
             and re.search("(?=.*[a-z])", password)
             and re.search("(?=.*[A-Z])", password)
             and re.search("(?=.*[!@#$%^&*])", password))
 
 
+def is_ascii(s):
+    return all(ord(c) < 128 for c in s)
+
+
+def dir_name_valid(name):
+    return len(name) > 0 and len(name) <= 120 and is_ascii(name)
+
+
+def get_tunnel_error_message(session_key, send_sqn, error):
+    # 3 arguments: "acknowledged", "failure", error message
+    arg_num = 3
+
+    # construct payload
+    payload = b""
+    payload += arg_num.to_bytes(1, byteorder="big")
+    payload += b"acknowledged"
+    arg_1_len = len("failure")
+    payload += arg_1_len.to_bytes(8, byteorder="big")
+    payload += b"failure"
+    arg_2_len = len(error)
+    payload += arg_2_len.to_bytes(8, byteorder="big")
+    payload += error.encode("utf-8")
+
+    # construct header
+    version_bytes = b'\x01\x00'  # version 1.0
+    rnd = Random.get_random_bytes(NONCE_LEN - SQN_LEN)
+    nonce = send_sqn.to_bytes(SQN_LEN, byteorder="big") + rnd
+    msg_len = HEADER_LEN + len(payload) + MAC_LEN
+    msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
+    own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
+    header = version_bytes + msg_len_bytes + own_id_bytes + nonce
+
+    # encrypt message
+    cipher = AES.new(session_key, AES.MODE_GCM,
+                     nonce=nonce, mac_len=MAC_LEN)
+    cipher.update(header)
+    encrypted_payload, auth_tag = cipher.encrypt_and_digest(payload)
+    return header + encrypted_payload + auth_tag
+
 # ---------------------------------------------- FILE HANDLING FUNCTIONS ------------------------------------------------
+
 
 def get_user_rel_path(path):
     global USER_ROOT_DIR
@@ -110,7 +153,7 @@ def path_allowed(path):
 
 def mkd(dir_name):
     path = get_path(dir_name)
-    if (os.path.exists(path)):
+    if (os.path.exists(path) and os.path.isdir(path)):
         return False, "A folder with the name {} already exists".format(dir_name)
     if (not path_allowed(path)):
         return False, "Access Denied"
@@ -211,38 +254,38 @@ def rmf(file_name):
 def execute_command(command, args):
     if (command == "MKD"):
         dir_name = args[0].decode("utf-8")
-        if (len(dir_name) > 120):
-            return False, "Directory name too long"
+        if (not dir_name_valid(dir_name)):
+            return False, "Directory name invalid"
         return mkd(dir_name)
     if (command == "RMD"):
         dir_name = args[0].decode("utf-8")
-        if (len(dir_name) > 120):
-            return False, "Directory name too long"
+        if (not dir_name_valid(dir_name)):
+            return False, "Directory name invalid"
         return rmd(dir_name)
     if (command == "GWD"):
         return gwd()
     if (command == "CWD"):
         path = args[0].decode("utf-8")
-        if (len(path) > 120):
-            return False, "Directory name too long"
+        if (not dir_name_valid(path)):
+            return False, "Path name invalid"
         return cwd(path)
     if (command == "LST"):
         return lst()
     if (command == "UPL"):
         file_name = args[0].decode("utf-8")
-        if (len(file_name) > 120):
-            return False, "File name too long"
+        if (not dir_name_valid(file_name)):
+            return False, "File name invalid"
         file_content = args[1]
         return upl(file_name, file_content)
     if (command == "DNL"):
         file_name = args[0].decode("utf-8")
-        if (len(file_name) > 120):
-            return False, "File name too long"
+        if (not dir_name_valid(file_name)):
+            return False, "File name invalid"
         return dnl(file_name)
     if (command == "RMF"):
         file_name = args[0].decode("utf-8")
-        if (len(file_name) > 120):
-            return False, "File name too long"
+        if (not dir_name_valid(file_name)):
+            return False, "File name invalid"
         return rmf(file_name)
     return False, "Invalid command"
 
@@ -283,9 +326,19 @@ def handshake():
     priv_key = RSA.importKey(open(PRIVATE_KEY_FILE).read())
     cipher = PKCS1_OAEP.new(priv_key)
 
-    # Get user data
-    contents = open(DATA_FILE).read()
-    user_data = literal_eval(contents)
+    # Create user file if it doesn't exist
+    if not (os.path.exists(DATA_FILE)):
+        try:
+            print("Creating file " + DATA_FILE + " ...")
+            with open(DATA_FILE, "wt") as f:
+                f.write("{ }")
+            user_data = {}
+        except Exception:
+            print("Couldn't create file {}".format(DATA_FILE))
+            sys.exit(1)
+    else:
+        contents = open(DATA_FILE).read()
+        user_data = literal_eval(contents)
 
     message_valid = False
     session_active = False
@@ -333,25 +386,33 @@ def handshake():
         timestamp = int.from_bytes(time_bytes, byteorder="big")
 
         # Validate message
-        if (not user_id in user_data):
-            print("Invalid user ID. Restarting..")
-            message_valid = False
-            continue
         if (not timestamp_valid(timestamp)):
             print("Invalid timestamp. Restarting..")
             message_valid = False
             continue
         if (not password_valid(password)):
-            print("Invalid timestamp. Restarting..")
+            print("Invalid password. Restarting..")
             message_valid = False
             continue
 
+        # Get password hash
         h = SHA224.new()
         h.update(password_bytes)
         password_hash = h.digest()
 
+        # Create new user with this password if they don't exist
+        if (not user_id in user_data):
+            print("User with ID {} doesn't exist. Creating it...".format(user_id))
+            user_data[user_id] = {}
+            user_data[user_id]["pass_hash"] = password_hash
+            # Write new data to file
+            with open(DATA_FILE, "wt") as f:
+                f.write("{}".format(user_data))
+
         if (password_hash != user_data[user_id]["pass_hash"]):
+            print("Invalid password. Restarting..")
             message_valid = False
+            continue
 
         # -------------------------------- Start Session ----------------------------------
         # Accept key and start new session
@@ -365,28 +426,20 @@ def handshake():
         ack_msg += get_millis(time.time()).to_bytes(32, byteorder="big")
 
         # Encrypt acknowledgment message with session key
-        nonce = 1
-        nonce_bytes = nonce.to_bytes(16, byteorder="big")
+        sqn = 1
+        rnd = Random.get_random_bytes(8)
+        nonce = sqn.to_bytes(8, byteorder="big") + rnd
         cipher = AES.new(session_key, AES.MODE_GCM,
-                         nonce=nonce_bytes, mac_len=MAC_LEN)
+                         nonce=nonce, mac_len=MAC_LEN)
+        cipher.update(nonce)
         ciphertext, tag = cipher.encrypt_and_digest(ack_msg)
 
         # send acknowledgement message
-        netif.send_msg(user_id, ciphertext + tag)
+        netif.send_msg(user_id, nonce + ciphertext + tag)
 
-        # fork a child to handle the Tunnel Protocol
-        newpid = os.fork()
-        if (newpid == 0):
-            # Child process handles Tunnel protocol
-            print("Exiting Handshake protocol...")
-            tunnel(user_id, session_key)
-        else:
-            # Parent process continues to accept messages
-            session_active = False
-            message_valid = False
-            session_key = b""
+    # Return established session credentials
     print("Exiting Handshake protocol...")
-    tunnel(user_id, session_key)
+    return user_id, session_key
 
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
@@ -401,11 +454,11 @@ def tunnel(user_id, session_key):
     # create network interface netif
     netif = network_interface(NET_ADDR, OWN_ID_TUNNEL)
 
+    # Get Directories
     global USER_ROOT_DIR
     global wd
-
-    # Get Directories
     USER_ROOT_DIR = os.path.abspath(USER_FILES_DIR + "/" + user_id)
+    wd = USER_ROOT_DIR
 
     # Ensure access
     if not os.access(USER_FILES_DIR, os.F_OK):
@@ -420,9 +473,6 @@ def tunnel(user_id, session_key):
         print("Creating folder " + USER_ROOT_DIR + " ...")
         os.mkdir(USER_ROOT_DIR)
 
-    # Working Directory
-    wd = USER_ROOT_DIR
-
     # start accepting messages
     print("Accepting messages...")
     send_sqn = 1
@@ -435,14 +485,13 @@ def tunnel(user_id, session_key):
 
         # ------------------------- Validate command message  ----------------------------
         print("Validating message...")
-        header_len = 23
-        if (len(msg) < header_len + MAC_LEN):
+        if (len(msg) < HEADER_LEN + MAC_LEN):
             print("Message length too short. Discarding message...")
             continue
 
         # Deconstruct message
-        header = msg[0:header_len]
-        encrypted_payload = msg[header_len:-MAC_LEN]
+        header = msg[0:HEADER_LEN]
+        encrypted_payload = msg[HEADER_LEN:-MAC_LEN]
         auth_tag = msg[-MAC_LEN:]
         index = 0
         version = header[0:2]
@@ -452,9 +501,9 @@ def tunnel(user_id, session_key):
         resp_id = header[index:index+1].decode("utf-8")
         index += 1
         nonce = header[index:index+NONCE_LEN]
-        new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+        new_sqn = int.from_bytes(nonce[0:SQN_LEN], byteorder="big")
 
-        # Only look at message from the current user
+        # Only look at messages from the current user
         if (resp_id != user_id):
             continue
 
@@ -474,17 +523,15 @@ def tunnel(user_id, session_key):
         cipher.update(header)
         try:
             payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-        except Exception as e:
-            print(e)
-            print("Header: ", header)
+        except Exception:
             print("Decryption failed. Restarting... ")
             continue
 
-        if (len(payload) + header_len + MAC_LEN != msg_len):
+        if (len(payload) + HEADER_LEN + MAC_LEN != msg_len):
             print("Message length incorrect. Restarting...")
             continue
 
-        print("Message valdidation successful...")
+        print("Message valdidation successful.")
 
         # ------------------------------ Parse command message  ---------------------------------
 
@@ -508,20 +555,28 @@ def tunnel(user_id, session_key):
                 index += arg_len
                 args.append(arg)
 
-        except Exception as e:
-            print(e)
-            print("Command parsing failed. Invalid command or argument length")
-            # TODO: SEND A FAILURE MESSAGE HERE
+        except Exception:
+            error = "Command parsing failed. Invalid command or argument length"
+            print(error)
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
             continue
 
         # Validate command message
         if (command not in COMMANDS):
-            print("Invalid command {}. Restarting...".format(command))
-            # TODO: SEND A FAILURE MESSAGE HERE
+            error = "Invalid command {}.".format(command)
+            print(error + " Restarting...")
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
             continue
         if (arg_num < 1 or arg_num != COMMANDS[command]["arg_num"] + 1 or len(args_raw) != index):
-            print("Invalid argument number. Restarting...")
-            # TODO: SEND A FAILURE MESSAGE HERE
+            error = "Invalid argument number."
+            print(error + " Restarting...")
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
             continue
 
         print("Received command: ", command)
@@ -558,10 +613,9 @@ def tunnel(user_id, session_key):
         # construct header
         version_bytes = b'\x01\x00'  # version 1.0
         send_sqn += 1
-        rnd = Random.get_random_bytes(8)
-        nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-        # Header length is 23 bytes (2 version number + 4 length + 1 ID +  16 nonce)
-        msg_len = 23 + len(payload) + MAC_LEN
+        rnd = Random.get_random_bytes(NONCE_LEN - SQN_LEN)
+        nonce = send_sqn.to_bytes(SQN_LEN, byteorder="big") + rnd
+        msg_len = HEADER_LEN + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
         own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
         header = version_bytes + msg_len_bytes + own_id_bytes + nonce
@@ -570,17 +624,44 @@ def tunnel(user_id, session_key):
         cipher = AES.new(session_key, AES.MODE_GCM,
                          nonce=nonce, mac_len=MAC_LEN)
         cipher.update(header)
-        encrypted_payload, auth_tag = cipher.encrypt_and_digest(
-            payload)
+        encrypted_payload, auth_tag = cipher.encrypt_and_digest(payload)
 
         # ---------------------------- Send acknowledgment message  --------------------------------------
         netif.send_msg(user_id, header + encrypted_payload + auth_tag)
         print("Acknowledgment message sent.")
 
-    # Exit this process
+        # End session if reached maximum number of allowed messages
+        if (send_sqn == 2 ** SQN_LEN - 2):
+            error = "Reached maximum number of messages per session."
+            print(error + " Logging out user...")
+            send_sqn += 1
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
+            session_key = b""
+            session_active = False
+
+    # End of Tunnel protocol
     print("Exiting Tunnel Protocol...")
-    sys.exit(0)
+
+# ---------------------------------------------- END OF TUNNEL PROTOCOL ------------------------------------------------
 
 
+# --------------------------------------------------- MAIN SERVER --------------------------------------------------------
+
+# Start up server
 print("Starting up the FAST Server...")
-handshake()
+while True:
+
+    # Establish new session using Handshake
+    user_id, session_key = handshake()
+
+    # Fork a new process to handle the session
+    newpid = os.fork()
+    if (newpid == 0):
+        # Child process handles Tunnel protocol
+        tunnel(user_id, session_key)
+        # Exit successfully upon completion
+        sys.exit(0)
+    else:
+        # Parent process continues to accept messages and forgets the session key
+        session_key = b""

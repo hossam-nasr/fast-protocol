@@ -7,7 +7,10 @@ from getpass import getpass
 import time
 import sys
 import threading
-
+import shlex
+import readline
+from termcolor import colored, cprint
+from colorama import Fore, Style
 
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
 
@@ -19,6 +22,9 @@ MAX_TRIALS = 3
 MAC_LEN = 16
 ACK_MSG_LEN = 46
 NONCE_LEN = 16
+SQN_LEN = 10
+# Header length is 23 bytes (2 version number + 4 length + 1 user ID + 16 nonce)
+HEADER_LEN = 7 + NONCE_LEN
 
 COMMANDS = {
     "MKD": {
@@ -46,7 +52,7 @@ COMMANDS = {
         "output_nums": [1, 2]
     },
     "END": {
-        "output_nums": [0]
+        "output_nums": [0, 2]
     }
 }
 
@@ -76,7 +82,8 @@ def handshake():
     while (not session_active):
 
         # Get user ID
-        user_id = input("Please enter your ID: ").rstrip().lstrip().upper()
+        user_id = input(Fore.CYAN + Style.BRIGHT + "Please enter your ID: " +
+                        Style.RESET_ALL).rstrip().lstrip().upper()
         if (len(user_id) > 1):
             user_id = user_id[0]
 
@@ -84,12 +91,13 @@ def handshake():
         netif = network_interface(NET_ADDR, user_id)
 
         # Get password
-        password = getpass("Please enter your password: ").rstrip().lstrip()
+        password = getpass(Fore.CYAN + Style.BRIGHT +
+                           "Please enter your password: " + Style.RESET_ALL).rstrip().lstrip()
 
         response_valid = False
         trials = 0
         while ((not session_active or not response_valid) and trials < MAX_TRIALS):
-            print("Starting a new session...")
+            cprint("Starting a new session...", "cyan", attrs=[])
             response_valid = True
 
             # -------------------------------- Initiate protocol  -------------------------------
@@ -113,38 +121,37 @@ def handshake():
             netif.send_msg(SERVER_ID_HANDSHAKE, ciphertext)
 
             # ---------------------------- Wait for server response  ---------------------------
-            print("Waiting for server response...")
+            cprint("Waiting for server response...", "cyan", attrs=[])
             _status, ack_msg = netif.receive_msg(blocking=True)
 
             # ---------------------------- Validate server response  ---------------------------
-            print("Checking server response...")
+            cprint("Checking server response...", "cyan", attrs=[])
 
-            if (len(ack_msg) < MAC_LEN):
+            if (len(ack_msg) < MAC_LEN + NONCE_LEN):
                 response_valid = False
                 continue
 
-            encrypted_payload = ack_msg[:-MAC_LEN]
+            nonce = ack_msg[:NONCE_LEN]
+            encrypted_payload = ack_msg[NONCE_LEN:-MAC_LEN]
             auth_tag = ack_msg[-MAC_LEN:]
 
             # Authenticate message
-            nonce = 1
-            nonce_bytes = nonce.to_bytes(16, byteorder="big")
             cipher = AES.new(session_key, AES.MODE_GCM,
-                             nonce=nonce_bytes, mac_len=MAC_LEN)
-
+                             nonce=nonce, mac_len=MAC_LEN)
+            cipher.update(nonce)
             try:
                 payload = cipher.decrypt_and_verify(
                     encrypted_payload, auth_tag)
             except Exception:
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again... ")
+                cprint("Bad response. Trying again... ", "yellow", attrs=[])
                 continue
 
             if (len(payload) != ACK_MSG_LEN):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again... ")
+                cprint("Bad response. Trying again... ", "yellow", attrs=[])
                 continue
 
             # Deconstruct message
@@ -161,47 +168,41 @@ def handshake():
             timestamp = int.from_bytes(time_bytes, byteorder="big")
             index += 32
 
-            # TODO: check here that there isn't more to the message
-
             # Validate message
+            received_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+            expected_sqn = 1
+            if (received_sqn != expected_sqn):
+                response_valid = False
+                trials += 1
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
+                continue
             if (response_id != user_id):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
-
             if (ack != "session_start"):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
 
             if (not timestamp_valid(timestamp)):
                 response_valid = False
                 trials += 1
-                print("Bad response. Trying again...")
+                cprint("Bad response. Trying again...", "yellow", attrs=[])
                 continue
 
             # -------------------------------- Start session  -------------------------------
             if (response_valid):
-                print("Successfully logged in...")
+                cprint("Successfully logged in!", "green", attrs=[])
                 session_active = True
 
         if (not session_active):
             print(
                 "After {} trials, no valid server response. Try again!".format(MAX_TRIALS))
-        else:
-            # Start a new thread to handle the tunnel protocol
-            threading.excepthook = lambda: sys.exit(1)
-            tunnel_thread = threading.Thread(
-                target=tunnel, args=(user_id, session_key))
-            tunnel_thread.start()
-            # Wait for thread to finish
-            tunnel_thread.join()
 
-            # Prepare to accept a new session
-            session_active = False
-            session_key = b""
+    return user_id, session_key
 
 # --------------------------------------------- END OF HANDSHAKE PROTOCOL -----------------------------------------------
 
@@ -209,7 +210,7 @@ def handshake():
 # -------------------------------------------------- TUNNEL PROTOCOL -----------------------------------------------------
 def tunnel(user_id, session_key):
     # -------------------------------- Setup  ----------------------------------
-    print("Start typing commands!")
+    cprint("Start typing commands!", "green", attrs=[])
     send_sqn = 0
     receive_sqn = 1
     wd = "/"
@@ -217,13 +218,15 @@ def tunnel(user_id, session_key):
     netif = network_interface(NET_ADDR, user_id)
     while (session_active):
         # Get command and args
-        raw_command = input("~" + wd + "$ ").rstrip().lstrip()
-        commands = raw_command.split()
+        print(Fore.MAGENTA + Style.BRIGHT + Style.DIM, end="")
+        raw_command = input(
+            "~" + wd + "$ " + Style.RESET_ALL).rstrip().lstrip()
+        commands = shlex.split(raw_command)
         command = commands[0].upper()
         args = commands[1:]
 
         if (command not in COMMANDS):
-            print("Unknown command {}".format(command))
+            cprint("Unknown command {}".format(command), "red", attrs=["bold"])
             continue
 
         # ------------------------- Construct command message  ----------------------------
@@ -240,10 +243,9 @@ def tunnel(user_id, session_key):
         # header
         version_bytes = b'\x01\x00'  # version 1.0
         send_sqn += 1
-        rnd = Random.get_random_bytes(8)
-        nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-        # Header length is 23 bytes (2 version number + 4 length + 1 user ID + 16 nonce)
-        msg_len = 23 + len(payload) + MAC_LEN
+        rnd = Random.get_random_bytes(NONCE_LEN - SQN_LEN)
+        nonce = send_sqn.to_bytes(SQN_LEN, byteorder="big") + rnd
+        msg_len = HEADER_LEN + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
         user_id_bytes = user_id.encode("utf-8")
         header = version_bytes + msg_len_bytes + user_id_bytes + nonce
@@ -260,22 +262,23 @@ def tunnel(user_id, session_key):
 
         # if the command was END, end the session, regardless of server response
         if (command == "END"):
-            print("Logging out...")
+            cprint("Logging out...", "cyan", attrs=[])
             session_active = False
 
         # -------------------- Wait for server acknowledgment message  ----------------------
         _status, msg = netif.receive_msg(blocking=True)
 
         # ----------------------- Validate acknowledgement message  ----------------------------
-        header_len = 23
-        if (len(msg) < header_len + MAC_LEN):
-            print("Error receiving response from server: Message length too short.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        if (len(msg) < HEADER_LEN + MAC_LEN):
+            cprint("Error receiving response from server: Message length too short.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # Deconstruct message
-        header = msg[0:header_len]
-        encrypted_payload = msg[header_len:-MAC_LEN]
+        header = msg[0:HEADER_LEN]
+        encrypted_payload = msg[HEADER_LEN:-MAC_LEN]
         auth_tag = msg[-MAC_LEN:]
         index = 0
         version = header[0:2]
@@ -285,23 +288,28 @@ def tunnel(user_id, session_key):
         resp_id = header[index:index+1].decode("utf-8")
         index += 1
         nonce = header[index:index+NONCE_LEN]
-        new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+        new_sqn = int.from_bytes(nonce[0:SQN_LEN], byteorder="big")
 
         # Validate message
         if (version != b'\x01\x00'):
-            print("Received version: ", version)
-            print("Error receiving response from server: Unsupported protocol version.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Unsupported protocol version.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
         if (new_sqn <= receive_sqn):
-            print("Error receiving response from server: Sequence number too small.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Sequence number too small.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
         else:
             receive_sqn = new_sqn
         if (resp_id != SERVER_ID_TUNNEL):
-            print("Error receiving response from server: Wrong ID.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Wrong ID.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # Decrypt message
@@ -310,15 +318,18 @@ def tunnel(user_id, session_key):
         cipher.update(header)
         try:
             payload = cipher.decrypt_and_verify(encrypted_payload, auth_tag)
-        except Exception as e:
-            print(
-                "Error receiving response from server: Authentication failed with error: ", e)
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        except Exception:
+            cprint("Error receiving response from server: Authentication failed.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
-        if (len(payload) + header_len + MAC_LEN != msg_len):
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        if (len(payload) + HEADER_LEN + MAC_LEN != msg_len):
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # ------------------------------ Parse command message  ---------------------------------
@@ -341,19 +352,25 @@ def tunnel(user_id, session_key):
                 index += output_len
                 outputs.append(output.decode("utf-8"))
 
-        except Exception as e:
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+        except Exception:
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # Validate command message
         if (ack != "acknowledged"):
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
         if (arg_num < 1 or (arg_num - 1 not in COMMANDS[command]["output_nums"] and "*" not in COMMANDS[command]["output_nums"]) or len(outputs_raw) != index):
-            print("Error receiving response from server: Message format corrupted.")
-            print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
+            cprint("Error receiving response from server: Message format corrupted.",
+                   "red", attrs=["bold"])
+            cprint("This may indicate an attack on your session. If the error persists, please consider logging out and in again.",
+                   "red", attrs=["bold"])
             continue
 
         # -------------------------------- Display output  -----------------------------------
@@ -361,19 +378,46 @@ def tunnel(user_id, session_key):
         if (command == "END"):
             session_active = False
             session_key = b""
-            print("Logged out.")
+            cprint("Logged out.", "green", attrs=["bold"])
 
+        # if command was CWD, display output in the shell
         if (command == "CWD" and len(outputs) == 1):
             wd = outputs[0]
         else:
+            # print outputs
+            print(Fore.CYAN + Style.BRIGHT, end="")
             for output in outputs:
-                print(output)
+                if (output == "success"):
+                    print(Fore.GREEN + "Success!")
+                elif (output == "failure"):
+                    print(Fore.RED + "Failure: ", end="")
+                else:
+                    print(output)
+            print(Style.RESET_ALL, end="")
 
-    # Exit this thread and hand back to Handshake!
-    print("Please login to start using FAST!")
+        # Exit session if reached maximum number of messages
+        if (send_sqn == 2 ** SQN_LEN - 1):
+            cprint(
+                "Reached maximum number of messages in one session. Logging out...", "yellow", attrs=["bold"])
+            session_active = False
+            session_key = b""
 
+
+# ---------------------------------------------- END OF TUNNEL PROTOCOL ------------------------------------------------
+
+
+# --------------------------------------------------- MAIN CLIENT -------------------------------------------------------
 
 # Intiate client
-print("Welcome to the FAST Protocol client!")
-print("Please login to start using FAST!")
-handshake()
+cprint("Welcome to the FAST Protocol client!", "yellow", attrs=["bold"])
+while (True):
+    cprint("Please login to start using FAST!", "yellow", attrs=["bold"])
+
+    # Use Handshake protocol to establish session
+    user_id, session_key = handshake()
+
+    # Use established session protocol to communicate over Tunnel
+    tunnel(user_id, session_key)
+
+    # Clear memory of session key
+    session_key = b""

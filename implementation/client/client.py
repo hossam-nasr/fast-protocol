@@ -8,6 +8,7 @@ import time
 import sys
 import threading
 import shlex
+import readline
 
 
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------

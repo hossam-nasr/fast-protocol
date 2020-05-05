@@ -10,15 +10,17 @@ import re
 import os
 import shutil
 import sys
+import getopt
 
 # ------------------------------------------------- CONSTANTS ----------------------------------------------------
 
 NET_ADDR = "../network/"
-OWN_ID_HANDSHAKE = "H"
-OWN_ID_TUNNEL = "T"
 DATA_FILE = "./user_data.txt"
 PRIVATE_KEY_FILE = "./private_key.pem"
 USER_FILES_DIR = "./user_files"
+
+OWN_ID_HANDSHAKE = "H"
+OWN_ID_TUNNEL = "T"
 USER_ROOT_DIR = None
 wd = None
 INIT_MSG_LEN = 97
@@ -460,18 +462,17 @@ def tunnel(user_id, session_key):
     USER_ROOT_DIR = os.path.abspath(USER_FILES_DIR + "/" + user_id)
     wd = USER_ROOT_DIR
 
-    # Ensure access
-    if not os.access(USER_FILES_DIR, os.F_OK):
-        print('Error: Cannot access path ' + USER_FILES_DIR)
-        sys.exit(1)
-
     # Create directories if they don't exist
-    if not (os.path.exists(USER_FILES_DIR)):
-        print("Creating folder " + USER_FILES_DIR + " ...")
-        os.mkdir(USER_FILES_DIR)
-    if not (os.path.exists(USER_ROOT_DIR)):
-        print("Creating folder " + USER_ROOT_DIR + " ...")
-        os.mkdir(USER_ROOT_DIR)
+    try:
+        if not (os.path.exists(USER_FILES_DIR)):
+            print("Creating folder " + USER_FILES_DIR + " ...")
+            os.mkdir(USER_FILES_DIR)
+        if not (os.path.exists(USER_ROOT_DIR)):
+            print("Creating folder " + USER_ROOT_DIR + " ...")
+            os.mkdir(USER_ROOT_DIR)
+    except Exception:
+        print("Error: cannot access directories")
+        sys.exit(1)
 
     # start accepting messages
     print("Accepting messages...")
@@ -647,6 +648,36 @@ def tunnel(user_id, session_key):
 
 
 # --------------------------------------------------- MAIN SERVER --------------------------------------------------------
+
+# get commandline arguments
+try:
+    opts, args = getopt.getopt(sys.argv[1:], shortopts='hp:n:u:f:', longopts=[
+                               'help', 'priv=', 'network=', 'users=', 'files='])
+except getopt.GetoptError:
+    print('Usage: python3 server.py -p <private key path> -n <network path> -u <user data file path> -f <user files path>')
+    sys.exit(1)
+
+# Execute command line arguments
+for opt, arg in opts:
+    if opt == '-h' or opt == '--help':
+        print('Usage: python3 server.py -p <private key path> -n <network path> -u <user data file path> -f <user files path>')
+        sys.exit(0)
+    elif opt == '-p' or opt == '--priv':
+        if (not os.path.exists(arg) or not os.path.isfile(arg)):
+            print("Error: File {} does not exist".format(arg))
+            sys.exit(1)
+        PRIVATE_KEY_FILE = arg
+    elif opt == '-n' or opt == '--network':
+        if (arg[-1] != "/" or arg[-1] != "\\"):
+            arg += "/"
+        if (not os.path.exists(arg) or not os.path.isdir(arg)):
+            print("Error: Directory {} does not exist".format(arg))
+            sys.exit(1)
+        NET_ADDR = arg
+    elif opt == '-u' or opt == '--users':
+        DATA_FILE = arg
+    elif opt == '-f' or opt == '--files':
+        USER_FILES_DIR = arg
 
 # Start up server
 print("Starting up the FAST Server...")

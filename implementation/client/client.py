@@ -6,18 +6,21 @@ from Crypto import Random
 from getpass import getpass
 import time
 import sys
+import os
 import threading
 import shlex
 import readline
+import getopt
 from termcolor import colored, cprint
 from colorama import Fore, Style
 
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
 
 NET_ADDR = "../network/"
+SERVER_INFO_FILE = "./server_pub_key.txt"
+
 SERVER_ID_TUNNEL = 'T'
 SERVER_ID_HANDSHAKE = 'H'
-SERVER_INFO_FILE = "./server_pub_key.txt"
 MAX_TRIALS = 3
 MAC_LEN = 16
 ACK_MSG_LEN = 46
@@ -407,6 +410,32 @@ def tunnel(user_id, session_key):
 
 
 # --------------------------------------------------- MAIN CLIENT -------------------------------------------------------
+
+# get commandline arguments
+try:
+    opts, args = getopt.getopt(sys.argv[1:], shortopts='hp:n:', longopts=[
+                               'help', 'pub=', 'network='])
+except getopt.GetoptError:
+    print('Usage: python3 client.py -p <server public key file path> -n <network path>')
+    sys.exit(1)
+
+# Execute command line arguments
+for opt, arg in opts:
+    if opt == '-h' or opt == '--help':
+        print('Usage: python3 server.py -p <server public key file path> -n <network path>')
+        sys.exit(0)
+    elif opt == '-p' or opt == '--pub':
+        if (not os.path.exists(arg) or not os.path.isfile(arg)):
+            print("Error: File {} does not exist".format(arg))
+            sys.exit(1)
+        SERVER_INFO_FILE = arg
+    elif opt == '-n' or opt == '--network':
+        if (arg[-1] != "/" or arg[-1] != "\\"):
+            arg += "/"
+        if (not os.path.exists(arg) or not os.path.isdir(arg)):
+            print("Error: Directory {} does not exist".format(arg))
+            sys.exit(1)
+        NET_ADDR = arg
 
 # Intiate client
 cprint("Welcome to the FAST Protocol client!", "yellow", attrs=["bold"])

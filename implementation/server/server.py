@@ -74,10 +74,19 @@ def timestamp_valid(millis):
 
 
 def password_valid(password):
-    return (len(password) >= 8 and len(password) <= 32
+    return (is_ascii(password) and
+            len(password) >= 8 and len(password) <= 32
             and re.search("(?=.*[a-z])", password)
             and re.search("(?=.*[A-Z])", password)
             and re.search("(?=.*[!@#$%^&*])", password))
+
+
+def is_ascii(s):
+    return all(ord(c) < 128 for c in s)
+
+
+def dir_name_valid(name):
+    len(name) > 0 and len(name) <= 120 and is_ascii(name)
 
 
 def get_tunnel_error_message(session_key, send_sqn, error):
@@ -245,38 +254,38 @@ def rmf(file_name):
 def execute_command(command, args):
     if (command == "MKD"):
         dir_name = args[0].decode("utf-8")
-        if (len(dir_name) > 120):
-            return False, "Directory name too long"
+        if (not dir_name_valid(dir_name)):
+            return False, "Directory name invalid"
         return mkd(dir_name)
     if (command == "RMD"):
         dir_name = args[0].decode("utf-8")
-        if (len(dir_name) > 120):
-            return False, "Directory name too long"
+        if (not dir_name_valid(dir_name)):
+            return False, "Directory name invalid"
         return rmd(dir_name)
     if (command == "GWD"):
         return gwd()
     if (command == "CWD"):
         path = args[0].decode("utf-8")
-        if (len(path) > 120):
-            return False, "Directory name too long"
+        if (not dir_name_valid(path)):
+            return False, "Path name invalid"
         return cwd(path)
     if (command == "LST"):
         return lst()
     if (command == "UPL"):
         file_name = args[0].decode("utf-8")
-        if (len(file_name) > 120):
-            return False, "File name too long"
+        if (not dir_name_valid(file_name)):
+            return False, "File name invalid"
         file_content = args[1]
         return upl(file_name, file_content)
     if (command == "DNL"):
         file_name = args[0].decode("utf-8")
-        if (len(file_name) > 120):
-            return False, "File name too long"
+        if (not dir_name_valid(file_name)):
+            return False, "File name invalid"
         return dnl(file_name)
     if (command == "RMF"):
         file_name = args[0].decode("utf-8")
-        if (len(file_name) > 120):
-            return False, "File name too long"
+        if (not dir_name_valid(file_name)):
+            return False, "File name invalid"
         return rmf(file_name)
     return False, "Invalid command"
 
@@ -622,9 +631,10 @@ def tunnel(user_id, session_key):
         print("Acknowledgment message sent.")
 
         # End session if reached maximum number of allowed messages
-        if (send_sqn == 2 ** SQN_LEN - 1):
-            error = "Reached maximum number of messages per session. Logging out..."
-            print(error)
+        if (send_sqn == 2 ** SQN_LEN - 2):
+            error = "Reached maximum number of messages per session."
+            print(error + " Logging out user...")
+            send_sqn += 1
             msg = get_tunnel_error_message(session_key, send_sqn, error)
             netif.send_msg(user_id, msg)
             session_key = b""

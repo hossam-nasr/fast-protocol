@@ -23,8 +23,9 @@ USER_ROOT_DIR = None
 wd = None
 INIT_MSG_LEN = 97
 MAC_LEN = 16
-HEADER_LEN = 23
 NONCE_LEN = 16
+SQN_LEN = 10
+HEADER_LEN = 7 + NONCE_LEN
 
 
 COMMANDS = {
@@ -96,9 +97,8 @@ def get_tunnel_error_message(session_key, send_sqn, error):
 
     # construct header
     version_bytes = b'\x01\x00'  # version 1.0
-    rnd = Random.get_random_bytes(8)
-    nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-    # Header length is 23 bytes (2 version number + 4 length + 1 ID +  16 nonce)
+    rnd = Random.get_random_bytes(NONCE_LEN - SQN_LEN)
+    nonce = send_sqn.to_bytes(SQN_LEN, byteorder="big") + rnd
     msg_len = HEADER_LEN + len(payload) + MAC_LEN
     msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
     own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
@@ -111,7 +111,7 @@ def get_tunnel_error_message(session_key, send_sqn, error):
     encrypted_payload, auth_tag = cipher.encrypt_and_digest(payload)
     return header + encrypted_payload + auth_tag
 
-    # ---------------------------------------------- FILE HANDLING FUNCTIONS ------------------------------------------------
+# ---------------------------------------------- FILE HANDLING FUNCTIONS ------------------------------------------------
 
 
 def get_user_rel_path(path):
@@ -492,7 +492,7 @@ def tunnel(user_id, session_key):
         resp_id = header[index:index+1].decode("utf-8")
         index += 1
         nonce = header[index:index+NONCE_LEN]
-        new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+        new_sqn = int.from_bytes(nonce[0:SQN_LEN], byteorder="big")
 
         # Only look at messages from the current user
         if (resp_id != user_id):
@@ -604,9 +604,8 @@ def tunnel(user_id, session_key):
         # construct header
         version_bytes = b'\x01\x00'  # version 1.0
         send_sqn += 1
-        rnd = Random.get_random_bytes(8)
-        nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-        # Header length is 23 bytes (2 version number + 4 length + 1 ID +  16 nonce)
+        rnd = Random.get_random_bytes(NONCE_LEN - SQN_LEN)
+        nonce = send_sqn.to_bytes(SQN_LEN, byteorder="big") + rnd
         msg_len = HEADER_LEN + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
         own_id_bytes = OWN_ID_TUNNEL.encode("utf-8")
@@ -621,6 +620,15 @@ def tunnel(user_id, session_key):
         # ---------------------------- Send acknowledgment message  --------------------------------------
         netif.send_msg(user_id, header + encrypted_payload + auth_tag)
         print("Acknowledgment message sent.")
+
+        # End session if reached maximum number of allowed messages
+        if (send_sqn == 2 ** SQN_LEN - 1):
+            error = "Reached maximum number of messages per session. Logging out..."
+            print(error)
+            msg = get_tunnel_error_message(session_key, send_sqn, error)
+            netif.send_msg(user_id, msg)
+            session_key = b""
+            session_active = False
 
     # End of Tunnel protocol
     print("Exiting Tunnel Protocol...")

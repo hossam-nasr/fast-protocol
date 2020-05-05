@@ -19,6 +19,9 @@ MAX_TRIALS = 3
 MAC_LEN = 16
 ACK_MSG_LEN = 46
 NONCE_LEN = 16
+SQN_LEN = 10
+# Header length is 23 bytes (2 version number + 4 length + 1 user ID + 16 nonce)
+HEADER_LEN = 7 + NONCE_LEN
 
 COMMANDS = {
     "MKD": {
@@ -233,10 +236,9 @@ def tunnel(user_id, session_key):
         # header
         version_bytes = b'\x01\x00'  # version 1.0
         send_sqn += 1
-        rnd = Random.get_random_bytes(8)
-        nonce = send_sqn.to_bytes(8, byteorder="big") + rnd
-        # Header length is 23 bytes (2 version number + 4 length + 1 user ID + 16 nonce)
-        msg_len = 23 + len(payload) + MAC_LEN
+        rnd = Random.get_random_bytes(NONCE_LEN - SQN_LEN)
+        nonce = send_sqn.to_bytes(SQN_LEN, byteorder="big") + rnd
+        msg_len = HEADER_LEN + len(payload) + MAC_LEN
         msg_len_bytes = msg_len.to_bytes(4, byteorder="big")
         user_id_bytes = user_id.encode("utf-8")
         header = version_bytes + msg_len_bytes + user_id_bytes + nonce
@@ -260,15 +262,14 @@ def tunnel(user_id, session_key):
         _status, msg = netif.receive_msg(blocking=True)
 
         # ----------------------- Validate acknowledgement message  ----------------------------
-        header_len = 23
-        if (len(msg) < header_len + MAC_LEN):
+        if (len(msg) < HEADER_LEN + MAC_LEN):
             print("Error receiving response from server: Message length too short.")
             print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
             continue
 
         # Deconstruct message
-        header = msg[0:header_len]
-        encrypted_payload = msg[header_len:-MAC_LEN]
+        header = msg[0:HEADER_LEN]
+        encrypted_payload = msg[HEADER_LEN:-MAC_LEN]
         auth_tag = msg[-MAC_LEN:]
         index = 0
         version = header[0:2]
@@ -278,7 +279,7 @@ def tunnel(user_id, session_key):
         resp_id = header[index:index+1].decode("utf-8")
         index += 1
         nonce = header[index:index+NONCE_LEN]
-        new_sqn = int.from_bytes(nonce[0:8], byteorder="big")
+        new_sqn = int.from_bytes(nonce[0:SQN_LEN], byteorder="big")
 
         # Validate message
         if (version != b'\x01\x00'):
@@ -309,7 +310,7 @@ def tunnel(user_id, session_key):
             print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
             continue
 
-        if (len(payload) + header_len + MAC_LEN != msg_len):
+        if (len(payload) + HEADER_LEN + MAC_LEN != msg_len):
             print("Error receiving response from server: Message format corrupted.")
             print("This may indicate an attack on your session. If the error persists, please consider logging out and in again.")
             continue
@@ -356,11 +357,20 @@ def tunnel(user_id, session_key):
             session_key = b""
             print("Logged out.")
 
+        # if command was CWD, display output in the shell
         if (command == "CWD" and len(outputs) == 1):
             wd = outputs[0]
         else:
+            # print outputs
             for output in outputs:
                 print(output)
+
+        # Exit session if reached maximum number of messages
+        if (send_sqn == 2 ** SQN_LEN - 1):
+            print("Reached maximum number of messages in one session. Logging out...")
+            session_active = False
+            session_key = b""
+
 
 # ---------------------------------------------- END OF TUNNEL PROTOCOL ------------------------------------------------
 

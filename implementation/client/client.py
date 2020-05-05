@@ -7,6 +7,7 @@ from getpass import getpass
 import time
 import sys
 import threading
+import shlex
 
 
 # ------------------------------------------------ CONSTANTS -----------------------------------------------------
@@ -214,7 +215,7 @@ def tunnel(user_id, session_key):
     while (session_active):
         # Get command and args
         raw_command = input("~" + wd + "$ ").rstrip().lstrip()
-        commands = raw_command.split()
+        commands = shlex.split(raw_command)
         command = commands[0].upper()
         args = commands[1:]
 

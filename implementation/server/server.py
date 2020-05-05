@@ -16,7 +16,7 @@ import sys
 NET_ADDR = "../network/"
 OWN_ID_HANDSHAKE = "H"
 OWN_ID_TUNNEL = "T"
-DATA_FILE = "./data.txt"
+DATA_FILE = "./user_data.txt"
 PRIVATE_KEY_FILE = "./private_key.pem"
 USER_FILES_DIR = "./user_files"
 USER_ROOT_DIR = None
@@ -283,9 +283,19 @@ def handshake():
     priv_key = RSA.importKey(open(PRIVATE_KEY_FILE).read())
     cipher = PKCS1_OAEP.new(priv_key)
 
-    # Get user data
-    contents = open(DATA_FILE).read()
-    user_data = literal_eval(contents)
+    # Create user file if it doesn't exist
+    if not (os.path.exists(DATA_FILE)):
+        try:
+            print("Creating file " + DATA_FILE + " ...")
+            with open(DATA_FILE, "wt") as f:
+                f.write("{ }")
+            user_data = {}
+        except Exception:
+            print("Couldn't create file {}".format(DATA_FILE))
+            sys.exit(1)
+    else:
+        contents = open(DATA_FILE).read()
+        user_data = literal_eval(contents)
 
     message_valid = False
     session_active = False
@@ -333,22 +343,28 @@ def handshake():
         timestamp = int.from_bytes(time_bytes, byteorder="big")
 
         # Validate message
-        if (not user_id in user_data):
-            print("Invalid user ID. Restarting..")
-            message_valid = False
-            continue
         if (not timestamp_valid(timestamp)):
             print("Invalid timestamp. Restarting..")
             message_valid = False
             continue
         if (not password_valid(password)):
-            print("Invalid timestamp. Restarting..")
+            print("Invalid password. Restarting..")
             message_valid = False
             continue
 
+        # Get password hash
         h = SHA224.new()
         h.update(password_bytes)
         password_hash = h.digest()
+
+        # Create new user with this password if they don't exist
+        if (not user_id in user_data):
+            print("User with ID {} doesn't exist. Creating it...".format(user_id))
+            user_data[user_id] = {}
+            user_data[user_id]["pass_hash"] = password_hash
+            # Write new data to file
+            with open(DATA_FILE, "wt") as f:
+                f.write("{}".format(user_data))
 
         if (password_hash != user_data[user_id]["pass_hash"]):
             print("Invalid password. Restarting..")

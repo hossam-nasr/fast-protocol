@@ -1,10 +1,10 @@
------------------------------------------ FAST Protocol Server and Client ------------------------------------------------
+----------------- FAST Protocol Server and Client ------------------------------
 -------- Hossam Mabed ----------
 -------- May 4, 2020  ----------
 ------ AIT-Budapest Inc. -------
 
 
----------------------------------------------------- Overview -----------------------------------------------------------------
+------------------------------- Overview ----------------------------------
 
 Thank you for choong File Asynchronous Secure Transfer (FAST), your one-stop solution for all your remote file handling needs!
 
@@ -13,12 +13,12 @@ In this repo, you will find the following:
         for the first version of the FAST protocols
 - In the ./implementation directory, you can find all the scripts necessary to run the FAST Protocol services
         (more details on that later)
-- In the root directory, the changelog.pdf provides the major design changes and additions that this implementation
+- In the root directory, the design_changelog.pdf provides the major design changes and additions that this implementation
         provides, in comparison with the original design document, found in ./design
     
 
 
----------------------------------------------------- Installation -----------------------------------------------------------------
+------------------------------- Installation ----------------------------------
 
 To start using FAST, please run the installation script by navigating to the implementation direction
 and running the installation script, or by typing into your terminal:
@@ -39,7 +39,7 @@ Furthermore, make sure your Python has the following modules:
 - getpass
 - shlex
 
-------------------------------------------------------- Running ------------------------------------------------------------------
+------------------------------- Running ----------------------------------
 
 
 To start using the server and client after installation, simply navigate to the implementation directory and run the run.sh script!
@@ -61,7 +61,7 @@ Alternatively, you can also use the run_network.sh, run_server.sh, or run_client
 implementation directory, to run just the network, server, or client, respectively.
 
 
--------------------------------------------------------- Contact Us! ----------------------------------------------------------------
+------------------------------- Contact Us! ----------------------------------
 
 
 Thank you for choosing FAST! We hope you have a great experience.
